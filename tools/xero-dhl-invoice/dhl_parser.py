@@ -165,11 +165,27 @@ def _extract_line_items(pdf) -> list[LineItem]:
 def parse_dhl_invoice(pdf_path: str | Path) -> DHLInvoice:
     pdf_path = Path(pdf_path)
     with pdfplumber.open(pdf_path) as pdf:
-        first_page_text = pdf.pages[0].extract_text() or ""
-        # 头部信息限定在单独一行内匹配,避免 Invoice No 为空时 \s* 跨行吃掉下一行内容
-        header_line = next(
-            (l for l in first_page_text.splitlines() if l.startswith("AWB No:")), ""
-        )
+        # DHL 有时会把"运单面单(Waybill)"和"Commercial Invoice"合并存成一个
+        # PDF,面单常常排在发票前面当第 1 页,所以不能假设发票一定是第一页,
+        # 要扫描找到真正带 "AWB No:" 那一页作为发票起始页。
+        invoice_page = None
+        header_line = ""
+        for page in pdf.pages:
+            text = page.extract_text() or ""
+            # 头部信息限定在单独一行内匹配,避免 Invoice No 为空时 \s* 跨行吃掉下一行内容
+            line = next((l for l in text.splitlines() if l.startswith("AWB No:")), "")
+            if line:
+                invoice_page = page
+                header_line = line
+                break
+
+        if invoice_page is None:
+            raise ValueError(
+                "在这份 PDF 里找不到 Commercial Invoice 的头部信息(AWB No / "
+                "Invoice Date / Invoice No),确认一下里面有没有标准 DHL "
+                "Commercial Invoice 那几页(比如是不是只上传了运单面单)"
+            )
+
         header_m = re.search(
             r"AWB No:\s*(\S+)\s+Invoice Date:\s*(\S+)\s+Invoice No:\s*(\S*)",
             header_line,
@@ -181,7 +197,7 @@ def parse_dhl_invoice(pdf_path: str | Path) -> DHLInvoice:
             )
         awb_no, invoice_date, invoice_no = header_m.groups()
 
-        ship_to = _extract_ship_to(pdf.pages[0])
+        ship_to = _extract_ship_to(invoice_page)
         line_items = _extract_line_items(pdf)
 
         full_text = "\n".join(p.extract_text() or "" for p in pdf.pages)
