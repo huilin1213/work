@@ -34,6 +34,8 @@ def build_invoice_payload(inv: DHLInvoice) -> dict:
     reference = f"DHL AWB {inv.awb_no}"
     line_items = [
         {
+            # Item 列填 DHL 发票上的原始行号,方便跟 DHL PDF 对照着核对
+            "ItemCode": li.item_no,
             "Description": f"{li.description} ({li.commodity_code})",
             "Quantity": li.qty,
             "UnitAmount": li.unit_value,
@@ -89,7 +91,20 @@ def process_one(pdf_path: str) -> None:
         f"金额:{inv.total_invoice_amount} {inv.currency}"
     )
 
-    created = create_invoice(payload)
+    try:
+        created = create_invoice(payload)
+    except RuntimeError as exc:
+        # 有些 Xero 账套要求 ItemCode 必须先在 Items 主数据里注册过,不接受
+        # 任意数字当 Item 代码;这种情况下自动去掉 ItemCode 重试一次,
+        # 保证发票还是能建出来(只是 Item 列会是空的)。
+        if "Item code" in str(exc) or "item code" in str(exc):
+            print("⚠️  这个账套不接受任意 ItemCode,自动去掉 Item 列重试一次...")
+            for li in payload["LineItems"]:
+                li.pop("ItemCode", None)
+            created = create_invoice(payload)
+        else:
+            raise
+
     print(f"✅ 已创建 {INVOICE_STATUS} 发票:{created.get('InvoiceNumber')} (InvoiceID={created.get('InvoiceID')})")
     print("   登录 Xero 网页版搜这个编号就能看到,核对无误后再手动发送/过账。")
 
