@@ -27,9 +27,11 @@ load_dotenv()
 AUTH_URL = "https://login.xero.com/identity/connect/authorize"
 TOKEN_URL = "https://identity.xero.com/connect/token"
 CONNECTIONS_URL = "https://api.xero.com/connections"
-# offline_access 是拿 refresh token 的关键 scope;accounting.transactions 建发票、
-# accounting.contacts 建/查客户联系人
-SCOPES = "openid profile email offline_access accounting.transactions accounting.contacts"
+# offline_access 是拿 refresh token 的关键 scope。
+# 2026-04-29 起 Xero 把粗粒度的 accounting.transactions 拆成了更细的 scope,
+# 新建的 App 只能用细分后的名字,这里用 accounting.invoices(建/改发票)+
+# accounting.contacts(建/查客户联系人)。
+SCOPES = "openid profile email offline_access accounting.invoices accounting.contacts"
 
 
 def _make_pkce_pair() -> tuple[str, str]:

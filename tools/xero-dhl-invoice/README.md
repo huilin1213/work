@@ -30,10 +30,11 @@ cp .env.example .env
 3. **Redirect URI** 填 `http://localhost:8765/callback`(要和 `.env` 里的
    `XERO_REDIRECT_URI` 保持一致)
 4. 创建后复制 **Client ID**,填到 `.env` 的 `XERO_CLIENT_ID`
-5. Scopes 页面勾选:`openid` `profile` `email` `offline_access`
-   `accounting.transactions` `accounting.contacts`
-   (2026 年 4 月起 Xero 把 scope 拆得更细了,如果界面上是细分选项,
-   选中"发票读写"和"联系人读写"相关的那几个即可,选多不选少)
+5. Scopes 不需要在网页上手动勾——2026 年 4 月起 Xero 把 scope 拆得更细了,
+   网页上那个 "Scopes" tab 现在只是列出所有可用 scope 名字的参考列表,
+   实际请求哪些 scope 是脚本在发起授权请求时指定的(见 `xero_auth.py` 里的
+   `SCOPES` 变量,目前用的是 `accounting.invoices` + `accounting.contacts` +
+   `offline_access`,对应新版细分 scope 命名)
 
 ## 三、首次授权(一次性,之后自动续期)
 
