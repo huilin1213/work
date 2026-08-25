@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Xero 自动开票工具的本地凭证/敏感数据,任何情况下都不应提交
+tools/xero-dhl-invoice/.env
+tools/xero-dhl-invoice/.xero_tokens.json
+
+# 真实的 DHL 发票 PDF 含客户姓名/地址等 PII,默认不进版本库
+tools/xero-dhl-invoice/samples/
+*.pdf
+
+# 系统杂项
+.DS_Store
