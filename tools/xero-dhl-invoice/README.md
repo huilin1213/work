@@ -34,7 +34,7 @@ cp .env.example .env
    网页上那个 "Scopes" tab 现在只是列出所有可用 scope 名字的参考列表,
    实际请求哪些 scope 是脚本在发起授权请求时指定的(见 `xero_auth.py` 里的
    `SCOPES` 变量,目前用的是 `accounting.invoices` + `accounting.contacts` +
-   `offline_access`,对应新版细分 scope 命名)
+   `accounting.settings.read` + `offline_access`,对应新版细分 scope 命名)
 
 ## 三、首次授权(一次性,之后自动续期)
 
