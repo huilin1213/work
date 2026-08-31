@@ -72,11 +72,16 @@ def _headers() -> dict:
 
 
 def find_invoice_by_reference(reference: str) -> dict | None:
-    """按 Reference(这里用 'DHL AWB <运单号>')查重,避免同一票货重复开票。"""
+    """按 Reference(这里用 'DHL AWB <运单号>')查重,避免同一票货重复开票。
+
+    Xero 里"删除"/"作废"一张发票并不是真的抹掉记录,而是把 Status 标成
+    DELETED / VOIDED,记录还查得到——所以这两种状态要排除掉,不然哪怕你在
+    Xero 网页上删了这张发票,脚本还是会以为它存在而跳过、不重新生成。
+    """
     resp = requests.get(
         f"{API_BASE}/Invoices",
         headers=_headers(),
-        params={"where": f'Reference=="{reference}"'},
+        params={"where": f'Reference=="{reference}"&&Status!="DELETED"&&Status!="VOIDED"'},
         timeout=30,
     )
     resp.raise_for_status()
