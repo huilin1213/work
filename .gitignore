@@ -12,5 +12,12 @@ tools/xero-dhl-invoice/.xero_tokens.json
 tools/xero-dhl-invoice/samples/
 *.pdf
 
+# eBay 购买记录同步工具的本地登录状态/配置,任何情况下都不应提交
+tools/ebay-purchase-sync/.env
+tools/ebay-purchase-sync/storage_state.json
+
+# 同步出来的购买记录 Excel 含个人购买明细,默认不进版本库
+tools/ebay-purchase-sync/*.xlsx
+
 # 系统杂项
 .DS_Store

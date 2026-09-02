@@ -4,14 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository contents
 
-This repo currently holds a single tool: `tools/xero-dhl-invoice/` — parses DHL
-Commercial Invoice PDFs (generated per shipment) and creates matching **Draft**
-sales invoices in Xero via the Accounting API. Everything below refers to that
-tool unless noted otherwise.
+This repo holds two independent tools under `tools/`:
+
+- `tools/xero-dhl-invoice/` — parses DHL Commercial Invoice PDFs (generated per
+  shipment) and creates matching **Draft** sales invoices in Xero via the
+  Accounting API.
+- `tools/ebay-purchase-sync/` — scrapes the signed-in user's own eBay Purchase
+  history web pages (no official buyer-side purchase API exists) and syncs
+  per-order line items (seller, order date/number, tracking number, item
+  price/qty, VAT, buyer protection fee, postage fee) into a local Excel file,
+  with a polling watcher for "new order shows up automatically" sync.
+
+The "Architecture" and "gotchas" sections below are organized per tool.
 
 ## Commands
 
-All commands run from `tools/xero-dhl-invoice/`.
+### `tools/xero-dhl-invoice/`
 
 ```bash
 pip install -r requirements.txt      # deps: pdfplumber, requests, python-dotenv
@@ -21,6 +29,18 @@ python3 xero_auth.py                 # one-time OAuth2 PKCE browser login; write
 python3 list_tax_rates.py            # queries Xero /TaxRates for this org's real TaxType codes
 python3 main.py <pdf> [<pdf> ...]    # parse -> validate -> dedupe -> create Draft invoice(s)
 python3 watch_folder.py [dir]        # polls a folder every 10s and runs main.process_one() on new PDFs
+```
+
+### `tools/ebay-purchase-sync/`
+
+```bash
+pip install -r requirements.txt      # deps: playwright, openpyxl, python-dotenv
+playwright install chromium          # first-time Playwright browser download
+cp .env.example .env                 # then fill in EBAY_DOMAIN etc.
+
+python3 ebay_login.py                # one-time interactive login; writes storage_state.json
+python3 main.py [year ...]           # scrape purchase history -> upsert rows into EXCEL_PATH
+python3 watch_sync.py                # polls every SYNC_INTERVAL_MINUTES and runs main.sync_once()
 ```
 
 There is no test suite or linter configured. The way this codebase has been
@@ -112,9 +132,74 @@ repo. `xero_auth.py` must still be run manually/interactively at least once
 before that, and again if `.xero_tokens.json`'s refresh token expires from 60
 days of inactivity.
 
+## `tools/ebay-purchase-sync/` architecture
+
+Same "independent modules wired together only through `main.py`" shape as the
+DHL tool:
+
+- **`ebay_scraper.py`** — pure Playwright-page-to-dataclass parsing
+  (`EbayOrder`, `LineItem`). No Excel dependency.
+- **`excel_sync.py`** — thin `openpyxl` wrapper: creates the workbook/sheet if
+  missing, appends only rows whose dedup key (`order number + product name +
+  qty + item price`) isn't already present. Never rewrites/overwrites existing
+  rows, so manual edits/pivot tables the user adds to the file survive re-syncs.
+- **`ebay_login.py`** — one-shot interactive login (launches a *headed*
+  browser, blocks on `input()` until the human finishes login/2FA in it, saves
+  `context.storage_state()`). Only ever run interactively by a human — never
+  from `watch_sync.py`, since it blocks on user login. Same role as
+  `xero_auth.py` in the DHL tool.
+- **`main.py`** — glues scraper + excel_sync together (`sync_once`) and is the
+  CLI entrypoint. `watch_sync.py` imports and calls `main.sync_once()`
+  directly, same pattern as `watch_folder.py` in the DHL tool.
+
+### eBay scraping gotchas (`ebay_scraper.py`)
+
+- There is no official eBay API for a buyer's own purchase history, so this
+  scrapes the rendered Purchase history / order-detail pages of a real logged-in
+  session. eBay's CSS class names are obfuscated and change across deploys, so
+  parsing intentionally matches on the page's *visible label text* ("Order
+  number", "Tracking number", "Buyer protection", ...) via `LABELS` at the top
+  of the file, rather than fixed selectors — closer to how a human reads the
+  page, and less likely to break on a pure styling/markup change. If a field
+  comes back empty, the fix is almost always adding eBay's actual wording as a
+  new candidate to `LABELS`, not touching the parsing logic.
+- Order list pages are fetched per year via `?filter=year:YYYY` on
+  `/mye/myebay/purchase`; `list_order_detail_links()` also clicks any "show
+  more/load more" button repeatedly to page through a year's full order list
+  before collecting "order details" links.
+- One order can contain several distinct products at different qty/price;
+  `_extract_line_items()` finds each "Item price" occurrence and looks
+  backward/forward across a few lines for the nearest title and quantity
+  rather than assuming a fixed row layout.
+- Money parsing (`_parse_money`) has to handle both point-decimal locales
+  (`ebay.co.uk`/`.com`, e.g. `1,234.56`) and comma-decimal locales (some EU
+  sites, e.g. `12,34 €`) — it treats a trailing `,dd` with no `.` present as
+  the decimal separator, otherwise treats `,` as a thousands separator.
+- After parsing, `parse_order_detail()` sums line-item prices + postage + VAT
+  + buyer protection and compares against the page's own "Order total" as a
+  sanity check (warns with the order's detail URL, does not abort) — same
+  spirit as the DHL tool's line-item-sum-vs-invoice-total check.
+- **This was built without the ability to log into a real eBay account and
+  verify selectors against the live DOM.** Treat the first real run's output
+  as unverified until spot-checked against a few orders' actual detail pages
+  (see README "六、第一次跑完务必人工核对").
+
+### Deployment
+
+`watch_sync.py` is meant to run unattended on the user's own machine (not this
+cloud session — cloud sessions/containers are ephemeral and don't stay up to
+poll), same LaunchAgent pattern as `tools/xero-dhl-invoice/watch_folder.py`.
+`ebay_login.py` must be run manually/interactively at least once before that,
+and again whenever `storage_state.json`'s session cookies expire or get
+invalidated (`main.py` detects a bounce back to the sign-in page and exits
+with a message to re-run it rather than silently syncing nothing).
+
 ## Secrets
 
-`.env` and `.xero_tokens.json` (both under `tools/xero-dhl-invoice/`) hold the
-Xero client ID and OAuth tokens respectively and must never be committed —
-both are gitignored at the repo root, along with `*.pdf` since DHL invoices
-contain customer PII.
+- `tools/xero-dhl-invoice/.env` and `.xero_tokens.json` hold the Xero client ID
+  and OAuth tokens and must never be committed.
+- `tools/ebay-purchase-sync/.env` and `storage_state.json` hold eBay site
+  config and the logged-in session's cookies and must never be committed.
+- All of the above are gitignored at the repo root, along with `*.pdf` (DHL
+  invoices contain customer PII) and `tools/ebay-purchase-sync/*.xlsx` (the
+  synced purchase history is personal purchasing data).
