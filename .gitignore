@@ -12,5 +12,11 @@ tools/xero-dhl-invoice/.xero_tokens.json
 tools/xero-dhl-invoice/samples/
 *.pdf
 
+# VAT 对账工具:真实发票登记表/银行流水含金额、供应商、账户等财务信息,不应提交
+# (ledger_template.xlsx 是空模板,不受这条影响)
+tools/vat-reconciliation/*.xlsx
+!tools/vat-reconciliation/ledger_template.xlsx
+tools/vat-reconciliation/*.csv
+
 # 系统杂项
 .DS_Store

@@ -4,14 +4,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository contents
 
-This repo currently holds a single tool: `tools/xero-dhl-invoice/` — parses DHL
-Commercial Invoice PDFs (generated per shipment) and creates matching **Draft**
-sales invoices in Xero via the Accounting API. Everything below refers to that
-tool unless noted otherwise.
+This repo holds two independent tools, each self-contained under its own
+`tools/<name>/` directory with its own `requirements.txt`:
+
+- `tools/xero-dhl-invoice/` — parses DHL Commercial Invoice PDFs (generated
+  per shipment) and creates matching **Draft** sales invoices in Xero via the
+  Accounting API.
+- `tools/vat-reconciliation/` — matches VAT purchase invoices (kept in a
+  manually-maintained Excel ledger) against HSBC/Revolut bank statement
+  exports, so every bank expense can be traced to the VAT amount on its
+  invoice, and flags eBay-order expenses that don't have an invoice yet so
+  they can be chased with the seller.
+
+The "Commands" and "Architecture" sections below cover `xero-dhl-invoice`;
+see `tools/vat-reconciliation/README.md` for that tool's own commands and
+design notes (it isn't duplicated here).
 
 ## Commands
 
-All commands run from `tools/xero-dhl-invoice/`.
+All commands in this section run from `tools/xero-dhl-invoice/`.
 
 ```bash
 pip install -r requirements.txt      # deps: pdfplumber, requests, python-dotenv
@@ -118,3 +129,8 @@ days of inactivity.
 Xero client ID and OAuth tokens respectively and must never be committed —
 both are gitignored at the repo root, along with `*.pdf` since DHL invoices
 contain customer PII.
+
+Under `tools/vat-reconciliation/`, any real invoice ledger or bank statement
+export (`*.xlsx` / `*.csv`, apart from the blank `ledger_template.xlsx`) is
+gitignored at the repo root too — those files carry real vendor names,
+amounts and account activity.
