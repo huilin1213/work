@@ -25,6 +25,7 @@ Drive 的 `VAT ACCOUNTING/AUGUST/eBay simple invoice` 文件夹,后面就能接
 ```bash
 cd tools/ebay-invoice-downloader
 pip install -r requirements.txt
+playwright install chromium   # 装 Playwright 用的浏览器本体,第一次必须跑一次
 cp .env.example .env   # 填 EBAY_MONTH / EBAY_OUTPUT_DIR
 ```
 
