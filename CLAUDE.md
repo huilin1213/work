@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository contents
 
-This repo holds two independent tools, each self-contained under its own
+This repo holds three independent tools, each self-contained under its own
 `tools/<name>/` directory with its own `requirements.txt`:
 
 - `tools/xero-dhl-invoice/` — parses DHL Commercial Invoice PDFs (generated
@@ -15,10 +15,15 @@ This repo holds two independent tools, each self-contained under its own
   exports, so every bank expense can be traced to the VAT amount on its
   invoice, and flags eBay-order expenses that don't have an invoice yet so
   they can be chased with the seller.
+- `tools/ebay-invoice-downloader/` — Playwright script, run locally (never
+  from a cloud session — see its README), that logs into eBay once
+  interactively and then saves every order's invoice/Tax-invoice page as a
+  PDF, so they don't have to be screenshotted one by one.
 
 The "Commands" and "Architecture" sections below cover `xero-dhl-invoice`;
-see `tools/vat-reconciliation/README.md` for that tool's own commands and
-design notes (it isn't duplicated here).
+see `tools/vat-reconciliation/README.md` and
+`tools/ebay-invoice-downloader/README.md` for those tools' own commands and
+design notes (not duplicated here).
 
 ## Commands
 
@@ -134,3 +139,7 @@ Under `tools/vat-reconciliation/`, any real invoice ledger or bank statement
 export (`*.xlsx` / `*.csv`, apart from the blank `ledger_template.xlsx`) is
 gitignored at the repo root too — those files carry real vendor names,
 amounts and account activity.
+
+Under `tools/ebay-invoice-downloader/`, `.env`, `.ebay_state.json` (the saved
+Playwright login session — not a password, but still local-only) and
+`.ebay_downloaded.json` are gitignored likewise.

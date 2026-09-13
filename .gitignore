@@ -18,5 +18,10 @@ tools/vat-reconciliation/*.xlsx
 !tools/vat-reconciliation/ledger_template.xlsx
 tools/vat-reconciliation/*.csv
 
+# eBay 发票下载工具:登录会话状态/已下载记录,本地专属,不应提交
+tools/ebay-invoice-downloader/.env
+tools/ebay-invoice-downloader/.ebay_state.json
+tools/ebay-invoice-downloader/.ebay_downloaded.json
+
 # 系统杂项
 .DS_Store
