@@ -29,16 +29,35 @@ ACCOUNT_CODE = os.environ.get("XERO_ACCOUNT_CODE", "200")
 TAX_TYPE = os.environ.get("XERO_TAX_TYPE", "NONE")
 INVOICE_STATUS = os.environ.get("XERO_INVOICE_STATUS", "DRAFT")
 
+# 可选:把 DHL 发票上的币种(通常是 GBP)按固定汇率换算成另一种币种再开票。
+#   XERO_TARGET_CURRENCY 留空 = 保持 PDF 原币种,不换算
+#   XERO_FX_RATE         = 1 单位 PDF 原币种 = 多少目标币种,例如 1 GBP = 1.32417 USD
+TARGET_CURRENCY = os.environ.get("XERO_TARGET_CURRENCY", "").strip().upper()
+FX_RATE = os.environ.get("XERO_FX_RATE", "").strip()
+
+
+def fx_rate_for(inv: DHLInvoice) -> float | None:
+    """需要换算时返回汇率,不需要换算(没配目标币种或和原币种相同)返回 None。"""
+    if not TARGET_CURRENCY or TARGET_CURRENCY == inv.currency.upper():
+        return None
+    if not FX_RATE:
+        raise RuntimeError(
+            f"设置了 XERO_TARGET_CURRENCY={TARGET_CURRENCY},但没填 XERO_FX_RATE"
+            f"(1 {inv.currency} = ? {TARGET_CURRENCY})"
+        )
+    return float(FX_RATE)
+
 
 def build_invoice_payload(inv: DHLInvoice) -> dict:
     reference = f"DHL AWB {inv.awb_no}"
+    rate = fx_rate_for(inv)
     line_items = [
         {
             # Item 列填 DHL 发票上的原始行号,方便跟 DHL PDF 对照着核对
             "ItemCode": li.item_no,
             "Description": f"{li.description} ({li.commodity_code})",
             "Quantity": li.qty,
-            "UnitAmount": li.unit_value,
+            "UnitAmount": round(li.unit_value * rate, 2) if rate else li.unit_value,
             "AccountCode": ACCOUNT_CODE,
             "TaxType": TAX_TYPE,
         }
@@ -57,15 +76,21 @@ def build_invoice_payload(inv: DHLInvoice) -> dict:
     if inv.ship_to.phone:
         contact["Phones"] = [{"PhoneType": "MOBILE", "PhoneNumber": inv.ship_to.phone}]
 
-    return {
+    payload = {
         "Type": "ACCREC",
         "Contact": contact,
         "Date": inv.invoice_date,
         "Reference": reference,
-        "CurrencyCode": inv.currency,
+        "CurrencyCode": TARGET_CURRENCY if rate else inv.currency,
         "LineItems": line_items,
         "Status": INVOICE_STATUS,
     }
+    if rate:
+        # Xero 的 CurrencyRate = 1 单位本位币 = 多少发票币种。账套本位币是 GBP 时
+        # 显式传入同一个汇率,Xero 折算回 GBP 入账的金额才会和 DHL 原始金额对得上,
+        # 否则 Xero 会自动用 XE.com 当天汇率。
+        payload["CurrencyRate"] = rate
+    return payload
 
 
 def process_one(pdf_path: str) -> None:
@@ -90,6 +115,12 @@ def process_one(pdf_path: str) -> None:
         f"客户:{inv.ship_to.name} | 商品行数:{len(inv.line_items)} | "
         f"金额:{inv.total_invoice_amount} {inv.currency}"
     )
+    if payload["CurrencyCode"] != inv.currency:
+        converted = round(sum(li["Quantity"] * li["UnitAmount"] for li in payload["LineItems"]), 2)
+        print(
+            f"   按 1 {inv.currency} = {payload['CurrencyRate']} {payload['CurrencyCode']} 换算后:"
+            f"{converted} {payload['CurrencyCode']}"
+        )
 
     try:
         created = create_invoice(payload)

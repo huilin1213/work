@@ -51,13 +51,14 @@ token 会过期,届时重新运行 `python xero_auth.py` 再授权一次就行�
 
 ## 四、按你账套的实际情况填几个默认值
 
-打开 `.env`,确认这三项(登录 Xero 网页版查):
+打开 `.env`,确认这几项(登录 Xero 网页版查):
 
 | 变量 | 在 Xero 里哪里查 |
 |---|---|
 | `XERO_ACCOUNT_CODE` | Accounting > Advanced > Chart of Accounts,出口销售用的科目代码 |
 | `XERO_TAX_TYPE` | Settings > Invoice settings > Tax rates,里面列出的 Tax Type 名字 |
 | `XERO_INVOICE_STATUS` | 默认 `DRAFT`,建议先保持不动,人工核对后再改成自动过账 |
+| `XERO_TARGET_CURRENCY` / `XERO_FX_RATE` | 可选。想把 GBP 发票换算成美金开票时填 `USD` 和 `1.32417`(1 GBP = 1.32417 USD);USD 要先在 Settings > Currencies 里添加 |
 
 ## 五、日常使用
 
