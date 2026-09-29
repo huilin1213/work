@@ -128,7 +128,12 @@ def step_check(plan: dict) -> None:
     print("== 新发票号 ==")
     for new in plan["invoices"]:
         inv = get_invoice_by_number(new["number"])
-        state = "可用" if not inv else f"已存在 ({inv['Status']}, {inv.get('Reference', '')})"
+        if not inv or inv["Status"] == "DELETED":
+            state = "可用"
+        elif inv.get("Reference") == new["reference"] and inv["Status"] not in DEAD_STATUSES:
+            state = f"已建过 ({inv['Status']})"
+        else:
+            state = f"⛔ 号码被占用 ({inv['Status']}, {inv.get('Reference', '')}),需要换号"
         print(f"  {new['number']}: {state}")
 
     print("== 清算账户 ==")
@@ -195,8 +200,16 @@ def step_create_new(plan: dict, execute: bool) -> None:
     created_any = False
     for inv in plan["invoices"]:
         existing = get_invoice_by_number(inv["number"])
-        if existing and existing["Status"] not in DEAD_STATUSES:
-            print(f"⏭  {inv['number']}: 已存在 ({existing['Status']}),跳过")
+        if existing and existing["Status"] != "DELETED":  # 删掉的草稿从没开出去,号码可以复用
+            same = existing.get("Reference") == inv["reference"] and existing["Status"] not in DEAD_STATUSES
+            if same:
+                print(f"⏭  {inv['number']}: 已建过 ({existing['Status']}),跳过")
+            else:
+                # 号码被别的发票占用(哪怕是作废的):不能跳过,否则这张发票会被悄悄漏掉
+                print(
+                    f"⛔ {inv['number']}: 发票号已被另一张发票占用 "
+                    f"({existing['Status']}, {existing.get('Reference', '')}),请在计划文件里换一个号"
+                )
             continue
         clash = find_invoice_by_reference(inv["reference"])
         if clash:
