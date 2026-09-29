@@ -97,6 +97,35 @@ python3 watch_folder.py
 可以配置成 macOS 的 LaunchAgent 登录启动项 —— 这个需要额外配置,想做的话告诉
 我,我再给你写具体步骤。
 
+## 七、整体重做一批发票(作废旧发票 → 重开 → 登记收款 / 预付款)
+
+当旧发票和 DHL 报关单、银行收款对不上时,用 `rebuild_invoices.py` 按一个 JSON
+计划文件一次性整理(格式见 `plans/example_plan.json`)。真实计划文件含客户信息,
+`plans/*.json` 已加入 `.gitignore`,只有示例会被提交。
+
+**准备工作(一次性)**
+1. 这个脚本需要额外的 `accounting.payments` 和 `accounting.banktransactions`
+   scope,已加进 `xero_auth.py`,**必须重新运行一次 `python3 xero_auth.py`**
+2. 在 Xero 里建两个不接银行流水的银行账户当"清算账户"(Accounting → Bank
+   accounts → Add bank account),比如 `Global Pay Clearing`、`USD Receipts
+   Clearing`,把它们的科目代码填到计划文件的 `clearing_accounts` 里。预付款/多付款
+   只能登记在 BANK 类型的账户上,所以这里必须是银行账户,不能是普通科目
+
+**执行顺序**(每一步默认只预览,加 `--execute` 才写入;重复执行会自动跳过已完成的)
+
+```bash
+python3 rebuild_invoices.py plans/2026-08.json validate    # 本地检查计划文件:逐行合计/units/收款分配是否自洽
+python3 rebuild_invoices.py plans/2026-08.json check       # 只读检查 Xero:旧发票状态、新发票号是否可用、清算账户
+python3 rebuild_invoices.py plans/2026-08.json void-old --execute    # 删除旧发票上的收款并作废(会要求输入 YES)
+python3 rebuild_invoices.py plans/2026-08.json create-new --execute  # 建 DRAFT 新发票
+# → 去 Xero 网页版逐张核对并 Approve(脚本不会自动过账)
+python3 rebuild_invoices.py plans/2026-08.json payments --execute    # 登记收款 + 预付款/多付款
+```
+
+注意:如果旧发票的收款已经和银行流水对过账(reconciled),Xero 不允许用 API
+删除,`void-old` 会报错——先在网页版 Bank account 里对那几笔点 Unreconcile 再重跑。
+清算账户里的手续费、转入 Revolut 的净额仍在 Xero 网页版做银行对账时处理。
+
 ## 已知限制 / 后续可以做的事
 
 - 目前假设 DHL PDF 是标准 Commercial Invoice 模板(见 `dhl_parser.py` 里对表格

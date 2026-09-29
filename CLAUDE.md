@@ -21,6 +21,8 @@ python3 xero_auth.py                 # one-time OAuth2 PKCE browser login; write
 python3 list_tax_rates.py            # queries Xero /TaxRates for this org's real TaxType codes
 python3 main.py <pdf> [<pdf> ...]    # parse -> validate -> dedupe -> create Draft invoice(s)
 python3 watch_folder.py [dir]        # polls a folder every 10s and runs main.process_one() on new PDFs
+python3 rebuild_invoices.py <plan.json> {validate|check|void-old|create-new|payments} [--execute]
+                                     # plan-driven clean-up: void old invoices, recreate, apply payments/prepayments
 ```
 
 There is no test suite or linter configured. The way this codebase has been
@@ -43,6 +45,16 @@ Four independent modules, wired together only through `main.py`:
   `http.server` on `XERO_REDIRECT_URI`'s port to catch the callback). Only
   ever run interactively by a human in a real terminal/browser — never from
   `watch_folder.py` or any automation, since it blocks on user login.
+- **`rebuild_invoices.py`** — one-off clean-up tool driven by a JSON plan
+  (`plans/example_plan.json` shows the schema; real plans are gitignored since
+  they hold customer data). Steps are dry-run unless `--execute`, and each is
+  idempotent: old invoices skip if already VOIDED, new invoices dedupe on
+  InvoiceNumber, payments dedupe on `"<receipt reference> #<n>"`, prepayments /
+  overpayments dedupe on BankTransaction Reference. New invoices are always
+  DRAFT; `payments` refuses to run until they are AUTHORISED in the web UI.
+  Receipts are applied to *clearing* accounts that must be Xero BANK-type
+  accounts (RECEIVE-PREPAYMENT / RECEIVE-OVERPAYMENT require a BankAccount);
+  fees and transfers to Revolut are left to manual bank reconciliation.
 - **`main.py`** — glues the two together (`build_invoice_payload`,
   `process_one`) and is also the CLI entrypoint. `watch_folder.py` imports and
   calls `main.process_one()` directly rather than shelling out, so the two
@@ -78,7 +90,8 @@ Four independent modules, wired together only through `main.py`:
   `accounting.transactions` scope no longer works for newly created apps —
   use the split scopes instead. Current set (`xero_auth.py` `SCOPES`):
   `openid profile email offline_access accounting.invoices
-  accounting.contacts accounting.settings.read`. `accounting.settings.read`
+  accounting.contacts accounting.settings.read accounting.payments
+  accounting.banktransactions` (the last two only for `rebuild_invoices.py`). `accounting.settings.read`
   is required for `/TaxRates` (used by `list_tax_rates.py`), not just
   invoices/contacts. Changing scopes requires re-running `xero_auth.py` to
   re-consent — a stored token doesn't retroactively gain new scopes.

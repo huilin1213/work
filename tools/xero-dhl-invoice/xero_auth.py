@@ -31,10 +31,13 @@ CONNECTIONS_URL = "https://api.xero.com/connections"
 # 2026-04-29 起 Xero 把粗粒度的 accounting.transactions 拆成了更细的 scope,
 # 新建的 App 只能用细分后的名字:accounting.invoices(建/改发票)、
 # accounting.contacts(建/查客户联系人)、accounting.settings.read(查税率/科目
-# 这类账套设置,list_tax_rates.py 要用到)。
+# 这类账套设置,list_tax_rates.py 要用到)、accounting.payments(登记/删除发票
+# 收款)、accounting.banktransactions(登记预付款/多付款,rebuild_invoices.py 要用到)。
+# 改了这里之后必须重新运行一次 xero_auth.py,旧 token 不会自动获得新 scope。
 SCOPES = (
     "openid profile email offline_access "
-    "accounting.invoices accounting.contacts accounting.settings.read"
+    "accounting.invoices accounting.contacts accounting.settings.read "
+    "accounting.payments accounting.banktransactions"
 )
 
 

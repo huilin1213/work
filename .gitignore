@@ -14,3 +14,7 @@ tools/xero-dhl-invoice/samples/
 
 # 系统杂项
 .DS_Store
+
+# rebuild_invoices.py 的真实计划文件含客户姓名/地址/收款金额,只提交示例
+tools/xero-dhl-invoice/plans/*.json
+!tools/xero-dhl-invoice/plans/example_plan.json
