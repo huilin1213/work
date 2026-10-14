@@ -16,6 +16,8 @@
 遇到验证码/被拦截时状态记为 UNKNOWN,不会误报。
 """
 
+from __future__ import annotations
+
 import argparse
 import base64
 import os
