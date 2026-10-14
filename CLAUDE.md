@@ -4,10 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository contents
 
-This repo currently holds a single tool: `tools/xero-dhl-invoice/` — parses DHL
-Commercial Invoice PDFs (generated per shipment) and creates matching **Draft**
-sales invoices in Xero via the Accounting API. Everything below refers to that
-tool unless noted otherwise.
+This repo holds two independent tools:
+
+- `tools/xero-dhl-invoice/` — parses DHL Commercial Invoice PDFs (generated per
+  shipment) and creates matching **Draft** sales invoices in Xero via the
+  Accounting API. Everything below refers to this tool unless noted otherwise.
+- `tools/ebay-stock-watcher/` — single-file script (`watch_ebay.py`) that polls
+  an eBay listing and sends a macOS notification / ntfy.sh push when it comes
+  back in stock. Uses the eBay Browse API if `EBAY_CLIENT_ID` /
+  `EBAY_CLIENT_SECRET` are set, otherwise scrapes the item page HTML. See its
+  README for usage and LaunchAgent setup.
 
 ## Commands
 
