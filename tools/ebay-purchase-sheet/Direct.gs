@@ -23,7 +23,8 @@ const DIRECT = {
 // One row per invoice line, so each part number has its own 数量/单价.
 const DIRECT_HEADERS = [
   '发票日期', '供应商', '发票号', '行号', '商品描述', '品牌', '单条容量', '频率',
-  '料号', '数量', '单价', '金额', '核对', '备注(手填)', '发票文件', '同步时间', '文件ID',
+  '料号', '数量', '单价', '金额', '发票总额(含VAT)', '不含VAT', '核对', '备注(手填)', '发票文件',
+  '同步时间', '文件ID',
 ];
 const DCOL = {};
 DIRECT_HEADERS.forEach(function (h, i) { DCOL[h] = i + 1; });
@@ -126,6 +127,11 @@ function buildDirectRows_(text, file, folderSupplier) {
   const supplier = folderSupplier || inv.supplier || name.replace(/\.[^.]+$/, '');
   const check = checkTotals(items, inv);
   const date = parseInvoiceDate(inv.date);
+  // Invoice totals go on the invoice's first row only, so summing the
+  // columns over the sheet doesn't count an invoice once per line.
+  let gross = inv.total, net = inv.net;
+  if (net === '' && gross !== '' && inv.vat !== '') net = Math.round((gross - inv.vat) * 100) / 100;
+  if (gross === '' && net !== '' && inv.vat !== '') gross = Math.round((net + inv.vat) * 100) / 100;
   const base = function (i, item) {
     const spec = item ? parseSpec(item.desc) : {};
     return [
@@ -134,6 +140,7 @@ function buildDirectRows_(text, file, folderSupplier) {
       spec.brand || '', spec.capacity || '', spec.speed || '',
       item ? (spec.partNo || partFromDesc(item.desc)) : '',
       item ? item.qty : '', item ? item.price : '', item ? item.amount : '',
+      i === 0 ? gross : '', i === 0 ? net : '',
       check, '', file.getUrl(), new Date(), file.getId(),
     ];
   };
@@ -211,7 +218,7 @@ function getDirectSheet_() {
     const max = sheet.getMaxRows();
     sheet.getRange(1, DCOL['发票日期'], max, 1).setNumberFormat('yyyy-mm-dd');
     sheet.getRange(1, DCOL['发票号'], max, 1).setNumberFormat('@');
-    sheet.getRange(1, DCOL['单价'], max, 2).setNumberFormat('£#,##0.00');
+    sheet.getRange(1, DCOL['单价'], max, 4).setNumberFormat('£#,##0.00');
     sheet.getRange(1, DCOL['同步时间'], max, 1).setNumberFormat('yyyy-mm-dd hh:mm');
     sheet.setColumnWidth(DCOL['商品描述'], 380);
     sheet.setColumnWidth(DCOL['行号'], 50);
