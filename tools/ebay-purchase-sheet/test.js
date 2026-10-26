@@ -9,7 +9,7 @@ vm.createContext(ctx);
 // Apps Script loads every .gs file into one global scope; mimic that.
 ['Code.gs', 'Direct.gs'].forEach((f) =>
   vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx, { filename: f }));
-const { parseOrderEmail, parseStatusSubject, parseSpec, parseInvoiceText, parseLineItems, checkTotals, partFromDesc, parseInvoiceDate } = ctx.module.exports;
+const { parseOrderEmail, parseStatusSubject, parseSpec, parseInvoiceText, parseLineItems, checkTotals, partFromDesc, parseInvoiceDate, summarize } = ctx.module.exports;
 
 // Trimmed from a real eBay UK "Order confirmed" email (offer accepted, with
 // Buyer Protection fee), with tracking params and the delivery address removed.
@@ -256,5 +256,22 @@ assert.strictEqual(d('21/10/2026'), '2026-10-21');
 assert.strictEqual(d('3 Oct 2026'), '2026-10-3');
 assert.strictEqual(d('2026-10-03'), '2026-10-3');
 assert.strictEqual(parseInvoiceDate('soon'), 'soon');
+
+// --- 直采汇总 ---
+const sum = summarize([
+  { supplier: 'Steve', fileId: 'a', date: new Date(2026, 8, 22), desc: '32gb Hynix', qty: 4, net: 647.5, gross: 777, check: '✓' },
+  { supplier: 'Steve', fileId: 'a', date: new Date(2026, 8, 22), desc: '8gb Kingston', qty: 12, net: '', gross: '', check: '✓' },
+  { supplier: 'Steve', fileId: 'b', date: new Date(2026, 9, 17), desc: '16gb Hynix', qty: 48, net: 1000, gross: 1200, check: '⚠ 明细合计' },
+  { supplier: 'Chaps IT', fileId: 'c', date: new Date(2026, 8, 7), desc: '32GB', qty: 16, net: 1160, gross: 1392, check: '✓' },
+  { supplier: 'Chaps IT', fileId: 'c', date: new Date(2026, 8, 7), desc: 'Delivery', qty: 1, net: '', gross: '', check: '✓' },
+  { supplier: '', fileId: 'x', date: '', desc: '', qty: '', net: '', gross: '', check: '' },
+]);
+const plain = (row) => row.map((v) => (Object.prototype.toString.call(v) === '[object Date]'
+  ? v.toISOString().slice(0, 10) : v));
+assert.deepStrictEqual(JSON.parse(JSON.stringify(sum.map(plain))), [
+  ['Chaps IT', 1, 16, 1160, 1392, new Date(2026, 8, 7).toISOString().slice(0, 10), 0],
+  ['Steve', 2, 64, 1647.5, 1977, new Date(2026, 9, 17).toISOString().slice(0, 10), 1],
+  ['合计', 3, 80, 2807.5, 3369, '', 1],
+]);
 
 console.log('all parser tests passed');

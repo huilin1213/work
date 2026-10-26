@@ -18,11 +18,17 @@ This repo holds two independent tools:
   once; see its README. The parsers are pure functions tested offline with
   `node test.js` (the `module.exports` guards at the bottom of the `.gs`
   files are for that and are no-ops in Apps Script). `Direct.gs` in the same
-  Apps Script project adds a "直采记录" tab for direct-supplier invoices
-  (source is only the Drive folder 「直采发票」 — email is deliberately not
-  read, since supplier threads mix invoices with quotes), OCR'd for free via a
-  Drive PDF/image -> Google Doc copy and parsed with regex rules; it runs
-  from `dailySync()` so both share one trigger. All `.gs` files share one
+  Apps Script project handles direct-supplier invoices, driven by a
+  「直采供应商」 tab (supplier name + emails): PDF attachments from those
+  addresses are saved to Drive 直采发票/<supplier>/ (deduped by a
+  `gmail:<msgId>:<i>` file-description tag and by name+size; emailed PDFs
+  without the word "invoice" are binned and remembered in Script
+  Properties), then every PDF/image under 直采发票 is OCR'd for free via a
+  Drive PDF/image -> Google Doc copy and parsed with regex rules into one
+  「直采记录」 row per invoice line, grouped by supplier with one colour per
+  invoice, plus a rebuilt 「直采汇总」 tab. It runs from `dailySync()` and
+  from the 采购工具 menu (`onOpen`). A 直采记录 tab whose header differs from
+  `DIRECT_HEADERS` is renamed and rebuilt from Drive automatically. All `.gs` files share one
   global scope in Apps Script, so top-level names must stay unique across
   files (test.js loads them into one vm context the same way).
 

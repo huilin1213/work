@@ -1,23 +1,31 @@
 /**
- * Direct-supplier invoices -> "直采记录" tab.
+ * Direct-supplier invoices -> "直采记录" tab, plus a per-supplier summary.
  *
- * Source: the Drive folder 「直采发票」 and its subfolders (one per supplier,
- * e.g. 直采发票/Steve). Every PDF/image put there (saved from email,
- * WhatsApp, etc.) is OCR'd once and becomes one row; moving a file between
- * subfolders later does not create a second row (rows are keyed by file ID). Email is
- * deliberately not read: supplier threads mix invoices with quotes and
- * chat, and one folder is a predictable single place to drop invoices.
+ * Everything is driven from the 「直采供应商」 tab (supplier name + email):
+ *   1. New PDF attachments from those addresses are saved automatically to
+ *      Drive 直采发票/<supplier>/ (only our own replies and non-PDFs are
+ *      skipped; PDFs that turn out not to be invoices are binned).
+ *   2. Every PDF/image in 直采发票 and its subfolders - including ones
+ *      dropped in by hand, e.g. from WhatsApp - is OCR'd once into one row
+ *      per invoice line. The subfolder name is the supplier.
+ *   3. Rows are grouped by supplier, newest invoice first, one colour per
+ *      invoice, and 「直采汇总」 is rebuilt with per-supplier totals.
  *
- * OCR uses Drive's free built-in PDF/image -> Google Doc conversion; fields
- * are then pulled out with regex rules, so every row starts as 「待核对」 for
- * a human to check. Runs from dailySync() in Code.gs (same triggers).
+ * OCR uses Drive's free built-in PDF/image -> Google Doc conversion and
+ * regex rules; the 核对 column flags invoices whose lines don't add up.
+ * Runs from dailySync() in Code.gs (same triggers) and from the 采购工具 menu.
  */
 
 const DIRECT = {
   SHEET_NAME: '直采记录',
+  SUPPLIER_SHEET: '直采供应商',
+  SUMMARY_SHEET: '直采汇总',
   FOLDER: '直采发票',
   OCR_LANGUAGE: 'en',
   OWN_COMPANY: /blue\s*bridgewell/i,
+  // Apps Script stops a run at 6 min; leave room to write the sheet. Files
+  // not reached are picked up by the next run.
+  MAX_RUN_MS: 4.5 * 60 * 1000,
 };
 
 // One row per invoice line, so each part number has its own 数量/单价.
@@ -29,62 +37,51 @@ const DIRECT_HEADERS = [
 const DCOL = {};
 DIRECT_HEADERS.forEach(function (h, i) { DCOL[h] = i + 1; });
 
+const SUPPLIER_HEADERS = ['供应商', '邮箱（多个用逗号隔开）', '备注'];
+// First-run contents of 「直采供应商」; after that the tab is the user's.
+const SUPPLIER_SEED = [
+  ['Steve', 'bozzy270681@gmail.com, bozzy_s@hotmail.com', ''],
+  ['Chaps IT', 'dom.chappell@chapsitrecycling.co.uk', ''],
+  ['SecureIT Recycling', 'reece@secure-itad.com', ''],
+  ['Richard Pacific', '', '没有邮箱：发票请手动存进 Drive 的 直采发票/Richard Pacific 文件夹'],
+];
+
 const OCR_MIME = ['application/pdf', 'image/jpeg', 'image/png', 'image/gif'];
+const SKIPPED_KEY = 'direct.skippedAttachments';
 
 // ---------------------------------------------------------------------------
 // Entry points
 // ---------------------------------------------------------------------------
 
-/** Run once by hand: creates the Drive folder and tab, then syncs. */
+/** Adds the 采购工具 menu to the spreadsheet so nothing needs the editor. */
+function onOpen() {
+  SpreadsheetApp.getUi().createMenu('采购工具')
+    .addItem('立即同步（eBay + 直采）', 'dailySync')
+    .addItem('只同步直采发票', 'syncDirectNow')
+    .addSeparator()
+    .addItem('重新排序和上色', 'recolorDirect')
+    .addToUi();
+}
+
+/** Run once by hand: creates folder and tabs, then syncs. */
 function setupDirect() {
   const folder = getDirectFolder_();
+  getSupplierSheet_();
   getDirectSheet_();
   const added = syncDirect_();
   Logger.log('Direct setup done. %s rows added. Drive folder: %s', added, folder.getUrl());
 }
 
-/** Manual "sync now" for direct invoices only. */
 function syncDirectNow() {
   Logger.log('Direct sync: %s new rows.', syncDirect_());
 }
 
-/**
- * Run by hand: copies every PDF a supplier ever emailed you into
- * 直采发票/<folder>, then syncs. Safe to re-run: each attachment is tagged
- * with its Gmail message ID + position and skipped if already saved.
- * Add a line to EMAIL_IMPORTS for another supplier.
- */
-const EMAIL_IMPORTS = [
-  { from: 'dom.chappell@chapsitrecycling.co.uk', folder: 'Chaps IT' },
-];
-
-function importEmailInvoices() {
-  const root = getDirectFolder_();
-  EMAIL_IMPORTS.forEach(function (imp) {
-    const sub = root.getFoldersByName(imp.folder);
-    const folder = sub.hasNext() ? sub.next() : root.createFolder(imp.folder);
-    const saved = {};
-    const files = folder.getFiles();
-    while (files.hasNext()) saved[files.next().getDescription()] = true;
-
-    let count = 0;
-    const from = imp.from.toLowerCase();
-    searchMessages_('from:' + imp.from + ' has:attachment').forEach(function (msg) {
-      // Threads also contain our own replies (which quote their attachments).
-      if (msg.getFrom().toLowerCase().indexOf(from) < 0) return;
-      msg.getAttachments({ includeInlineImages: false }).forEach(function (att, i) {
-        if (att.getContentType() !== 'application/pdf') return;
-        const tag = 'gmail:' + msg.getId() + ':' + i;
-        if (saved[tag]) return;
-        const date = Utilities.formatDate(msg.getDate(), CONFIG.TIMEZONE, 'yyyy-MM-dd');
-        folder.createFile(att.copyBlob()).setName(date + ' ' + att.getName()).setDescription(tag);
-        saved[tag] = true;
-        count++;
-      });
-    });
-    Logger.log('%s: saved %s new PDF(s) to 直采发票/%s', imp.from, count, imp.folder);
-  });
-  Logger.log('Direct sync: %s new rows.', syncDirect_());
+/** Re-sort, re-colour and rebuild the summary, e.g. after hand edits. */
+function recolorDirect() {
+  const sheet = getDirectSheet_();
+  sortDirect_(sheet);
+  colorInvoices_(sheet);
+  writeSummary_(sheet);
 }
 
 // ---------------------------------------------------------------------------
@@ -92,39 +89,133 @@ function importEmailInvoices() {
 // ---------------------------------------------------------------------------
 
 function syncDirect_() {
+  const started = Date.now();
+  const root = getDirectFolder_();
+  const suppliers = readSuppliers_();
+  const skipped = loadSkipped_();
+  importFromEmail_(root, suppliers, skipped);
+
   const sheet = getDirectSheet_();
   const seen = indexDirectRows_(sheet);
-  const rows = [];
+  const canonical = {};
+  suppliers.forEach(function (s) { canonical[s.name.toLowerCase()] = s.name; });
 
-  listInvoiceFiles_(getDirectFolder_(), '').forEach(function (f) {
-    if (seen[f.file.getId()]) return;
+  const rows = [];
+  const files = listInvoiceFiles_(root, '');
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    if (seen[f.file.getId()]) continue;
+    if (Date.now() - started > DIRECT.MAX_RUN_MS) {
+      Logger.log('Time limit: remaining invoices will be read on the next run.');
+      break;
+    }
     seen[f.file.getId()] = true;
-    Array.prototype.push.apply(rows, buildDirectRows_(ocrFile_(f.file.getId()), f.file, f.supplier));
-  });
+    const text = ocrFile_(f.file.getId());
+    const tag = f.file.getDescription() || '';
+    // An emailed PDF that never says "invoice" is a quote, price list, etc.
+    if (tag.indexOf('gmail:') === 0 && !/invoice/i.test(text)) {
+      skipped[tag] = true;
+      f.file.setTrashed(true);
+      continue;
+    }
+    const supplier = canonical[String(f.supplier).toLowerCase()] || f.supplier;
+    Array.prototype.push.apply(rows, buildDirectRows_(text, f.file, supplier));
+  }
+  saveSkipped_(skipped);
 
   if (rows.length) {
     sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, DIRECT_HEADERS.length).setValues(rows);
   }
   sortDirect_(sheet);
   colorInvoices_(sheet);
+  writeSummary_(sheet);
   return rows.length;
 }
 
-/** Manual: re-sort and re-colour, e.g. after editing or deleting rows by hand. */
-function recolorDirect() {
-  const sheet = getDirectSheet_();
-  sortDirect_(sheet);
-  colorInvoices_(sheet);
+/**
+ * Saves new PDF attachments from each supplier's addresses into
+ * 直采发票/<supplier>/. An attachment is skipped when it was saved before
+ * (tag in file description), binned before as a non-invoice, or already
+ * sits in the folder under its own name with the same size (saved by hand).
+ */
+function importFromEmail_(root, suppliers, skipped) {
+  // What is already anywhere under 直采发票 (any supplier folder or the root),
+  // so invoices saved earlier by hand are not imported a second time.
+  const tags = {}, sizes = {};
+  listInvoiceFiles_(root, '').forEach(function (f) {
+    tags[f.file.getDescription()] = true;
+    sizes[f.file.getName() + '|' + f.file.getSize()] = true;
+  });
+  const sameFile = function (name, size) {
+    return Object.keys(sizes).some(function (k) {
+      const cut = k.lastIndexOf('|');
+      return +k.slice(cut + 1) === size && k.slice(0, cut).slice(-name.length) === name;
+    });
+  };
+
+  suppliers.forEach(function (s) {
+    if (!s.emails.length) return;
+    const folder = findOrCreateSubfolder_(root, s.name);
+    let count = 0;
+    const query = 'from:(' + s.emails.join(' OR ') + ') has:attachment filename:pdf';
+    searchMessages_(query).forEach(function (msg) {
+      const from = msg.getFrom().toLowerCase();
+      if (!s.emails.some(function (e) { return from.indexOf(e) >= 0; })) return;
+      msg.getAttachments({ includeInlineImages: false }).forEach(function (att, i) {
+        // Some mailers send PDFs as application/octet-stream.
+        if (att.getContentType() !== 'application/pdf' && !/\.pdf$/i.test(att.getName())) return;
+        const tag = 'gmail:' + msg.getId() + ':' + i;
+        if (tags[tag] || skipped[tag]) return;
+        const size = att.getBytes().length;
+        if (sameFile(att.getName(), size)) return;
+        const date = Utilities.formatDate(msg.getDate(), CONFIG.TIMEZONE, 'yyyy-MM-dd');
+        const name = date + ' ' + att.getName();
+        folder.createFile(att.copyBlob()).setName(name).setDescription(tag);
+        tags[tag] = true;
+        sizes[name + '|' + size] = true;  // same PDF re-sent in a later email
+        count++;
+      });
+    });
+    if (count) Logger.log('%s: saved %s new PDF(s) from email', s.name, count);
+  });
 }
 
-/** Newest invoice first; each invoice's lines kept together and in order. */
+/** Grouped by supplier, newest invoice first, each invoice's lines in order. */
 function sortDirect_(sheet) {
   if (sheet.getLastRow() < 3) return;
   sheet.getRange(2, 1, sheet.getLastRow() - 1, DIRECT_HEADERS.length).sort([
+    { column: DCOL['供应商'], ascending: true },
     { column: DCOL['发票日期'], ascending: false },
     { column: DCOL['文件ID'], ascending: true },
     { column: DCOL['行号'], ascending: true },
   ]);
+}
+
+const SUMMARY_HEADERS = ['供应商', '发票数', '商品数量', '不含VAT合计', '含VAT合计', '最近一张发票', '需核对的发票'];
+
+/** Rebuilds 「直采汇总」: one row per supplier plus a total row. */
+function writeSummary_(sheet) {
+  const ss = sheet.getParent();
+  let sum = ss.getSheetByName(DIRECT.SUMMARY_SHEET);
+  if (!sum) sum = ss.insertSheet(DIRECT.SUMMARY_SHEET, 1);
+  const n = sheet.getLastRow() - 1;
+  const data = n > 0 ? sheet.getRange(2, 1, n, DIRECT_HEADERS.length).getValues() : [];
+  const rows = summarize(data.map(function (r) {
+    return {
+      supplier: r[DCOL['供应商'] - 1], fileId: r[DCOL['文件ID'] - 1], date: r[DCOL['发票日期'] - 1],
+      desc: r[DCOL['商品描述'] - 1], qty: r[DCOL['数量'] - 1], net: r[DCOL['不含VAT'] - 1],
+      gross: r[DCOL['发票总额(含VAT)'] - 1], check: r[DCOL['核对'] - 1],
+    };
+  }));
+  sum.clear();
+  const out = [SUMMARY_HEADERS].concat(rows);
+  sum.getRange(1, 1, out.length, SUMMARY_HEADERS.length).setValues(out);
+  sum.getRange(1, 1, 1, SUMMARY_HEADERS.length).setFontWeight('bold').setBackground('#e2efda');
+  sum.getRange(out.length, 1, 1, SUMMARY_HEADERS.length).setFontWeight('bold');
+  sum.getRange(2, 4, out.length, 2).setNumberFormat('£#,##0.00');
+  sum.getRange(2, 6, out.length, 1).setNumberFormat('yyyy-mm-dd');
+  sum.setFrozenRows(1);
+  sum.autoResizeColumns(1, SUMMARY_HEADERS.length);
 }
 
 // Light colours cycled per invoice; consecutive invoices never share one.
@@ -258,6 +349,16 @@ function docToText_(body) {
 function getDirectSheet_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sheet = ss.getSheetByName(DIRECT.SHEET_NAME);
+  // A tab from an older layout is kept (renamed, notes intact) and a fresh
+  // one is rebuilt from the Drive files, so column changes need no hand work.
+  if (sheet && sheet.getLastRow() > 0) {
+    const head = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    if (head.join('|') !== DIRECT_HEADERS.join('|')) {
+      sheet.setName(DIRECT.SHEET_NAME + '(旧版 ' +
+        Utilities.formatDate(new Date(), CONFIG.TIMEZONE, 'yyyy-MM-dd HH:mm') + ')');
+      sheet = null;
+    }
+  }
   if (!sheet) sheet = ss.insertSheet(DIRECT.SHEET_NAME, 1);
   if (sheet.getLastRow() === 0) {
     sheet.getRange(1, 1, 1, DIRECT_HEADERS.length).setValues([DIRECT_HEADERS])
@@ -289,6 +390,58 @@ function indexDirectRows_(sheet) {
 function getDirectFolder_() {
   const it = DriveApp.getFoldersByName(DIRECT.FOLDER);
   return it.hasNext() ? it.next() : DriveApp.createFolder(DIRECT.FOLDER);
+}
+
+/** Subfolder of `root` named `name`, matched case-insensitively ("steve" = "Steve"). */
+function findOrCreateSubfolder_(root, name) {
+  const it = root.getFolders();
+  while (it.hasNext()) {
+    const f = it.next();
+    if (f.getName().toLowerCase() === name.toLowerCase()) return f;
+  }
+  return root.createFolder(name);
+}
+
+function getSupplierSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(DIRECT.SUPPLIER_SHEET);
+  if (!sheet) {
+    sheet = ss.insertSheet(DIRECT.SUPPLIER_SHEET);
+    const rows = [SUPPLIER_HEADERS].concat(SUPPLIER_SEED);
+    sheet.getRange(1, 1, rows.length, SUPPLIER_HEADERS.length).setValues(rows);
+    sheet.getRange(1, 1, 1, SUPPLIER_HEADERS.length).setFontWeight('bold').setBackground('#e2efda');
+    sheet.setFrozenRows(1);
+    sheet.setColumnWidth(1, 180);
+    sheet.setColumnWidth(2, 380);
+    sheet.setColumnWidth(3, 420);
+  }
+  return sheet;
+}
+
+/** [{name, emails}] from 「直采供应商」; blank names are ignored. */
+function readSuppliers_() {
+  const sheet = getSupplierSheet_();
+  const n = sheet.getLastRow() - 1;
+  if (n < 1) return [];
+  return sheet.getRange(2, 1, n, 2).getValues()
+    .filter(function (r) { return String(r[0]).trim(); })
+    .map(function (r) {
+      return {
+        name: String(r[0]).trim(),
+        emails: String(r[1]).toLowerCase().split(/[\s,;，；]+/)
+          .filter(function (e) { return e.indexOf('@') > 0; }),
+      };
+    });
+}
+
+/** Gmail attachment tags already binned as non-invoices, so they aren't re-imported. */
+function loadSkipped_() {
+  const raw = PropertiesService.getScriptProperties().getProperty(SKIPPED_KEY);
+  return raw ? JSON.parse(raw) : {};
+}
+
+function saveSkipped_(skipped) {
+  PropertiesService.getScriptProperties().setProperty(SKIPPED_KEY, JSON.stringify(skipped));
 }
 
 // ---------------------------------------------------------------------------
@@ -447,6 +600,39 @@ function partFromDesc(desc) {
   return toks.length ? toks[toks.length - 1].toUpperCase() : '';
 }
 
+/**
+ * Per-supplier totals from 直采记录 rows ({supplier, fileId, date, desc, qty,
+ * net, gross, check}), plus a final 合计 row. Invoices are counted by file;
+ * postage/delivery lines don't count as goods.
+ */
+function summarize(rows) {
+  const by = {};
+  rows.forEach(function (r) {
+    if (!r.supplier) return;
+    const s = by[r.supplier] || (by[r.supplier] = { files: {}, flagged: {}, qty: 0, net: 0, gross: 0, last: '' });
+    s.files[r.fileId] = true;
+    if (String(r.check).indexOf('⚠') === 0) s.flagged[r.fileId] = true;
+    if (typeof r.qty === 'number' && !/postage|delivery|shipping|carriage/i.test(r.desc)) s.qty += r.qty;
+    if (typeof r.net === 'number') s.net += r.net;
+    if (typeof r.gross === 'number') s.gross += r.gross;
+    const isDate = Object.prototype.toString.call(r.date) === '[object Date]';
+    if (isDate && (!s.last || r.date > s.last)) s.last = r.date;
+  });
+  const total = ['合计', 0, 0, 0, 0, '', 0];
+  const out = Object.keys(by).sort().map(function (name) {
+    const s = by[name];
+    const row = [name, Object.keys(s.files).length, s.qty, round2_(s.net), round2_(s.gross),
+      s.last, Object.keys(s.flagged).length];
+    [1, 2, 3, 4, 6].forEach(function (i) { total[i] += row[i]; });
+    return row;
+  });
+  total[3] = round2_(total[3]);
+  total[4] = round2_(total[4]);
+  return out.concat([total]);
+}
+
+function round2_(x) { return Math.round(x * 100) / 100; }
+
 const MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
 
 /** "September 22, 2026" / "21/10/2026" (UK) / "3 Oct 2026" / "2026-10-03" -> Date; else the input. */
@@ -465,5 +651,6 @@ function parseInvoiceDate(s) {
 
 if (typeof module !== 'undefined') {
   Object.assign(module.exports, { parseInvoiceText: parseInvoiceText, parseLineItems: parseLineItems,
-    checkTotals: checkTotals, partFromDesc: partFromDesc, parseInvoiceDate: parseInvoiceDate });
+    checkTotals: checkTotals, partFromDesc: partFromDesc, parseInvoiceDate: parseInvoiceDate,
+    summarize: summarize });
 }
