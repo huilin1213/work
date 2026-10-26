@@ -10,7 +10,7 @@
  *
  * OCR uses Drive's free built-in PDF/image -> Google Doc conversion; fields
  * are then pulled out with regex rules, so every row starts as 「待核对」 for
- * a human to check. Runs from dailySync() in Code.gs (same 08:00 trigger).
+ * a human to check. Runs from dailySync() in Code.gs (same triggers).
  */
 
 const DIRECT = {
