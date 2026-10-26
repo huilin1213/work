@@ -9,7 +9,7 @@ vm.createContext(ctx);
 // Apps Script loads every .gs file into one global scope; mimic that.
 ['Code.gs', 'Direct.gs'].forEach((f) =>
   vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx, { filename: f }));
-const { parseOrderEmail, parseStatusSubject, parseSpec, parseInvoiceText, parseLineItems, checkTotals, partFromDesc, parseInvoiceDate, summarize } = ctx.module.exports;
+const { parseOrderEmail, parseStatusSubject, parseSpec, parseInvoiceText, parseLineItems, checkTotals, parseInvoiceDate, countUnits } = ctx.module.exports;
 
 // Trimmed from a real eBay UK "Order confirmed" email (offer accepted, with
 // Buyer Protection fee), with tracking params and the delivery address removed.
@@ -245,10 +245,6 @@ const tab = parseLineItems('Description\tQty\tPrice\tAmount\n16gb Micron MTA18AS
 assert.strictEqual(tab.length, 1);
 assert.strictEqual(tab[0].qty, 3);
 
-assert.strictEqual(partFromDesc('8gb PC4-2133 ECC Reg Kingston KTH-PL421/8G'), 'KTH-PL421/8G');
-assert.strictEqual(partFromDesc('8gb PC4-2400 ECC Reg Kingston KVR24R17S4/8 1Rx4'), 'KVR24R17S4/8');
-assert.strictEqual(partFromDesc('4gb PC4-2400 ECC Reg Crucial CT4G4RFS824A'), 'CT4G4RFS824A');
-assert.strictEqual(partFromDesc('16gb PC4-2400 desktop dimm'), '');
 
 const d = (x) => { const v = parseInvoiceDate(x); return [v.getFullYear(), v.getMonth() + 1, v.getDate()].join('-'); };
 assert.strictEqual(d('September 22, 2026'), '2026-9-22');
@@ -302,21 +298,47 @@ assert.strictEqual(wrapped[0].qty, 20);
 assert.strictEqual(parseSpec(wrapped[0].desc).partNo, 'HMA84GR7AFR4N-UH');
 assert.strictEqual(parseSpec(wrapped[1].desc).capacity, '32GB');
 
-// --- 直采汇总 ---
-const sum = summarize([
-  { supplier: 'Steve', fileId: 'a', date: new Date(2026, 8, 22), desc: '32gb Hynix', qty: 4, net: 647.5, gross: 777, check: '✓' },
-  { supplier: 'Steve', fileId: 'a', date: new Date(2026, 8, 22), desc: '8gb Kingston', qty: 12, net: '', gross: '', check: '✓' },
-  { supplier: 'Steve', fileId: 'b', date: new Date(2026, 9, 17), desc: '16gb Hynix', qty: 48, net: 1000, gross: 1200, check: '⚠ 明细合计' },
-  { supplier: 'Chaps IT', fileId: 'c', date: new Date(2026, 8, 7), desc: '32GB', qty: 16, net: 1160, gross: 1392, check: '✓' },
-  { supplier: 'Chaps IT', fileId: 'c', date: new Date(2026, 8, 7), desc: 'Delivery', qty: 1, net: '', gross: '', check: '✓' },
-  { supplier: '', fileId: 'x', date: '', desc: '', qty: '', net: '', gross: '', check: '' },
-]);
-const plain = (row) => row.map((v) => (Object.prototype.toString.call(v) === '[object Date]'
-  ? v.toISOString().slice(0, 10) : v));
-assert.deepStrictEqual(JSON.parse(JSON.stringify(sum.map(plain))), [
-  ['Chaps IT', 1, 16, 1160, 1392, new Date(2026, 8, 7).toISOString().slice(0, 10), 0],
-  ['Steve', 2, 64, 1647.5, 1977, new Date(2026, 9, 17).toISOString().slice(0, 10), 1],
-  ['合计', 3, 80, 2807.5, 3369, '', 1],
-]);
+// Same Chaps invoice as Drive OCR actually lays it out: labels on one line,
+// values on the next, and table columns one after another.
+const chapsOcr = `Invoice
+Invoice Date Invoice Number
+10 Sep 2026 IV-582488
+Reference VAT Number
+390293290
+Description
+Quantity
+Unit Price
+VAT
+Amount GBP
+16GB SK Hynix HMA82GR7AFR8N-VK
+32GB Samsung M393A4K40BB0- CPB
+16.00
+16.00
+41.6667
+80.00
+20%
+20%
+666.67
+1,280.00
+Subtotal 1,946.67
+Total VAT 20% 389.33 Invoice Total GBP 2,336.00
+Total GBP 2,336.00
+Due Date: 17 Sep 2026`;
+const co = parseInvoiceText(chapsOcr);
+assert.strictEqual(co.invoiceNo, 'IV-582488');
+assert.strictEqual(co.date, '10 Sep 2026');
+assert.strictEqual(co.net, 1946.67);
+const col3 = parseLineItems(chapsOcr);
+assert.strictEqual(col3.length, 2);
+assert.strictEqual(col3[1].desc, '32GB Samsung M393A4K40BB0-CPB');
+assert.strictEqual(col3[1].qty, 16);
+assert.strictEqual(col3[1].price, 80);
+assert.strictEqual(col3[1].amount, 1280);
+assert.strictEqual(checkTotals(col3, co), '✓ 明细合计=发票小计');
+
+// Units ignore postage lines; nothing recognised -> blank.
+assert.strictEqual(countUnits(li), 24);
+assert.strictEqual(countUnits([{ desc: 'Lenovo 32GB', qty: 36 }, { desc: 'Delivery', qty: 1 }]), 36);
+assert.strictEqual(countUnits([]), '');
 
 console.log('all parser tests passed');

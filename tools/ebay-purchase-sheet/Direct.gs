@@ -1,53 +1,55 @@
 /**
- * Direct-supplier invoices -> "直采记录" tab, plus a per-supplier summary.
+ * Direct-supplier invoices -> one 「直采汇总」 tab, one row per invoice,
+ * newest first.
  *
- * Everything is driven from the 「直采供应商」 tab (supplier name + email):
- *   1. New PDF attachments from those addresses are saved automatically to
- *      Drive 直采发票/<supplier>/ (only our own replies and non-PDFs are
- *      skipped; PDFs that turn out not to be invoices are binned).
- *   2. Every PDF/image in 直采发票 and its subfolders - including ones
- *      dropped in by hand, e.g. from WhatsApp - is OCR'd once into one row
- *      per invoice line. The subfolder name is the supplier.
- *   3. Rows are grouped by supplier, newest invoice first, one colour per
- *      invoice, and 「直采汇总」 is rebuilt with per-supplier totals.
+ * Sources:
+ *   - PDF attachments emailed by the suppliers listed in 「直采供应商」
+ *     (saved automatically to Drive 直采发票/<supplier>/; emailed PDFs that
+ *     never say "invoice" - quotes, price lists - are binned);
+ *   - any PDF/image put under Drive 直采发票/ by hand (e.g. from WhatsApp).
+ *     The subfolder name is the supplier.
  *
- * OCR uses Drive's free built-in PDF/image -> Google Doc conversion and
- * regex rules; the 核对 column flags invoices whose lines don't add up.
- * Runs from dailySync() in Code.gs (same triggers) and from the 采购工具 menu.
+ * Each file is OCR'd once (Drive's free PDF/image -> Google Doc conversion)
+ * and parsed with regex rules for date, invoice number, net/gross totals
+ * and the line items (only used to count units and to check the lines add
+ * up to the subtotal). 出口日期/出口单号 are typed by hand; rows are keyed by
+ * file ID and never rewritten, so hand-typed cells survive every sync.
+ * Runs from dailySync() in Code.gs and from the 采购工具 menu.
  */
 
 const DIRECT = {
-  SHEET_NAME: '直采记录',
+  SHEET_NAME: '直采汇总',
   SUPPLIER_SHEET: '直采供应商',
-  SUMMARY_SHEET: '直采汇总',
   FOLDER: '直采发票',
   OCR_LANGUAGE: 'en',
   OWN_COMPANY: /blue\s*bridgewell/i,
-  // Apps Script stops a run at 6 min; leave room to write the sheet. Files
-  // not reached are picked up by the next run.
+  // Apps Script stops a run at 6 min; files not reached are read next run.
   MAX_RUN_MS: 4.5 * 60 * 1000,
 };
 
-// One row per invoice line, so each part number has its own 数量/单价.
 const DIRECT_HEADERS = [
-  '发票日期', '供应商', '发票号', '行号', '商品描述', '品牌', '单条容量', '频率',
-  '料号', '数量', '单价', '金额', '发票总额(含VAT)', '不含VAT', '核对', '备注(手填)', '发票文件',
-  '同步时间', '文件ID',
+  '发票日期', '供应商', '发票号', '商品数量', '不含VAT', '含VAT', '发票链接',
+  '出口日期(手填)', '出口单号(手填)', '核对', '文件ID',
 ];
 const DCOL = {};
 DIRECT_HEADERS.forEach(function (h, i) { DCOL[h] = i + 1; });
 
 const SUPPLIER_HEADERS = ['供应商', '邮箱（多个用逗号隔开）', '备注'];
-// First-run contents of 「直采供应商」; after that the tab is the user's.
+// Added to 「直采供应商」 once each (tracked by name in Script Properties),
+// so a supplier the user later deletes is not re-added.
 const SUPPLIER_SEED = [
   ['Steve', 'bozzy270681@gmail.com, bozzy_s@hotmail.com', ''],
   ['Chaps IT', 'dom.chappell@chapsitrecycling.co.uk', ''],
   ['SecureIT Recycling', 'reece@secure-itad.com', ''],
   ['Richard Pacific', '', '没有邮箱：发票请手动存进 Drive 的 直采发票/Richard Pacific 文件夹'],
+  ['Jon (Alekus Repairs)', 'alekusrepairs@gmail.com', ''],
+  ['Asif (Eruptive Brands)', 'asif@eruptivebrands.com', ''],
+  ['IT Recycling', 'carl@itrecycling.uk.com', ''],
 ];
 
 const OCR_MIME = ['application/pdf', 'image/jpeg', 'image/png', 'image/gif'];
 const SKIPPED_KEY = 'direct.skippedAttachments';
+const SEEDED_KEY = 'direct.seededSuppliers';
 
 // ---------------------------------------------------------------------------
 // Entry points
@@ -59,41 +61,36 @@ function onOpen() {
     .addItem('立即同步（eBay + 直采）', 'dailySync')
     .addItem('只同步直采发票', 'syncDirectNow')
     .addSeparator()
-    .addItem('重新排序和上色', 'recolorDirect')
     .addItem('重新识别全部直采发票', 'rebuildDirect')
     .addToUi();
 }
 
 /** Run once by hand: creates folder and tabs, then syncs. */
 function setupDirect() {
+  // The per-line 直采记录 tabs of earlier versions are replaced by 直采汇总.
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  ss.getSheets().forEach(function (sh) {
+    if (/^直采记录/.test(sh.getName())) ss.deleteSheet(sh);
+  });
   const folder = getDirectFolder_();
   getSupplierSheet_();
   getDirectSheet_();
   const added = syncDirect_();
-  Logger.log('Direct setup done. %s rows added. Drive folder: %s', added, folder.getUrl());
+  Logger.log('Direct setup done. %s invoices added. Drive folder: %s', added, folder.getUrl());
 }
 
 function syncDirectNow() {
-  Logger.log('Direct sync: %s new rows.', syncDirect_());
+  Logger.log('Direct sync: %s new invoices.', syncDirect_());
 }
 
 /**
- * After the recognition rules improve: keeps the current 直采记录 as a
- * renamed backup (notes intact) and reads every invoice in Drive again.
+ * After the recognition rules improve: keeps the current 直采汇总 as a
+ * renamed backup (hand-typed 出口 columns intact) and reads every invoice
+ * in Drive again.
  */
 function rebuildDirect() {
-  const sheet = getDirectSheet_();
-  sheet.setName(DIRECT.SHEET_NAME + '(旧版 ' +
-    Utilities.formatDate(new Date(), CONFIG.TIMEZONE, 'yyyy-MM-dd HH:mm') + ')');
+  backupSheet_(getDirectSheet_());
   syncDirectNow();
-}
-
-/** Re-sort, re-colour and rebuild the summary, e.g. after hand edits. */
-function recolorDirect() {
-  const sheet = getDirectSheet_();
-  sortDirect_(sheet);
-  colorInvoices_(sheet);
-  writeSummary_(sheet);
 }
 
 // ---------------------------------------------------------------------------
@@ -131,16 +128,17 @@ function syncDirect_() {
       continue;
     }
     const supplier = canonical[String(f.supplier).toLowerCase()] || f.supplier;
-    Array.prototype.push.apply(rows, buildDirectRows_(text, f.file, supplier));
+    rows.push(buildInvoiceRow_(text, f.file, supplier));
   }
   saveSkipped_(skipped);
 
   if (rows.length) {
     sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, DIRECT_HEADERS.length).setValues(rows);
   }
-  sortDirect_(sheet);
-  colorInvoices_(sheet);
-  writeSummary_(sheet);
+  if (sheet.getLastRow() > 2) {
+    sheet.getRange(2, 1, sheet.getLastRow() - 1, DIRECT_HEADERS.length)
+      .sort({ column: DCOL['发票日期'], ascending: false });
+  }
   return rows.length;
 }
 
@@ -148,11 +146,9 @@ function syncDirect_() {
  * Saves new PDF attachments from each supplier's addresses into
  * 直采发票/<supplier>/. An attachment is skipped when it was saved before
  * (tag in file description), binned before as a non-invoice, or already
- * sits in the folder under its own name with the same size (saved by hand).
+ * sits anywhere under 直采发票 under its own name with the same size.
  */
 function importFromEmail_(root, suppliers, skipped) {
-  // What is already anywhere under 直采发票 (any supplier folder or the root),
-  // so invoices saved earlier by hand are not imported a second time.
   const tags = {}, sizes = {};
   listInvoiceFiles_(root, '').forEach(function (f) {
     tags[f.file.getDescription()] = true;
@@ -167,10 +163,11 @@ function importFromEmail_(root, suppliers, skipped) {
 
   suppliers.forEach(function (s) {
     if (!s.emails.length) return;
-    const folder = findOrCreateSubfolder_(root, s.name);
+    let folder = null;
     let count = 0;
     const query = 'from:(' + s.emails.join(' OR ') + ') has:attachment filename:pdf';
     searchMessages_(query).forEach(function (msg) {
+      // Threads also hold our own replies, which quote their attachments.
       const from = msg.getFrom().toLowerCase();
       if (!s.emails.some(function (e) { return from.indexOf(e) >= 0; })) return;
       msg.getAttachments({ includeInlineImages: false }).forEach(function (att, i) {
@@ -180,6 +177,7 @@ function importFromEmail_(root, suppliers, skipped) {
         if (tags[tag] || skipped[tag]) return;
         const size = att.getBytes().length;
         if (sameFile(att.getName(), size)) return;
+        folder = folder || findOrCreateSubfolder_(root, s.name);
         const date = Utilities.formatDate(msg.getDate(), CONFIG.TIMEZONE, 'yyyy-MM-dd');
         const name = date + ' ' + att.getName();
         folder.createFile(att.copyBlob()).setName(name).setDescription(tag);
@@ -190,64 +188,6 @@ function importFromEmail_(root, suppliers, skipped) {
     });
     if (count) Logger.log('%s: saved %s new PDF(s) from email', s.name, count);
   });
-}
-
-/** Grouped by supplier, newest invoice first, each invoice's lines in order. */
-function sortDirect_(sheet) {
-  if (sheet.getLastRow() < 3) return;
-  sheet.getRange(2, 1, sheet.getLastRow() - 1, DIRECT_HEADERS.length).sort([
-    { column: DCOL['供应商'], ascending: true },
-    { column: DCOL['发票日期'], ascending: false },
-    { column: DCOL['文件ID'], ascending: true },
-    { column: DCOL['行号'], ascending: true },
-  ]);
-}
-
-const SUMMARY_HEADERS = ['供应商', '发票数', '商品数量', '不含VAT合计', '含VAT合计', '最近一张发票', '需核对的发票'];
-
-/** Rebuilds 「直采汇总」: one row per supplier plus a total row. */
-function writeSummary_(sheet) {
-  const ss = sheet.getParent();
-  let sum = ss.getSheetByName(DIRECT.SUMMARY_SHEET);
-  if (!sum) sum = ss.insertSheet(DIRECT.SUMMARY_SHEET, 1);
-  const n = sheet.getLastRow() - 1;
-  const data = n > 0 ? sheet.getRange(2, 1, n, DIRECT_HEADERS.length).getValues() : [];
-  const rows = summarize(data.map(function (r) {
-    return {
-      supplier: r[DCOL['供应商'] - 1], fileId: r[DCOL['文件ID'] - 1], date: r[DCOL['发票日期'] - 1],
-      desc: r[DCOL['商品描述'] - 1], qty: r[DCOL['数量'] - 1], net: r[DCOL['不含VAT'] - 1],
-      gross: r[DCOL['发票总额(含VAT)'] - 1], check: r[DCOL['核对'] - 1],
-    };
-  }));
-  sum.clear();
-  const out = [SUMMARY_HEADERS].concat(rows);
-  sum.getRange(1, 1, out.length, SUMMARY_HEADERS.length).setValues(out);
-  sum.getRange(1, 1, 1, SUMMARY_HEADERS.length).setFontWeight('bold').setBackground('#e2efda');
-  sum.getRange(out.length, 1, 1, SUMMARY_HEADERS.length).setFontWeight('bold');
-  sum.getRange(2, 4, out.length, 2).setNumberFormat('£#,##0.00');
-  sum.getRange(2, 6, out.length, 1).setNumberFormat('yyyy-mm-dd');
-  sum.setFrozenRows(1);
-  sum.autoResizeColumns(1, SUMMARY_HEADERS.length);
-}
-
-// Light colours cycled per invoice; consecutive invoices never share one.
-const INVOICE_COLORS = ['#fff2cc', '#ddebf7', '#e2efda', '#fce4d6', '#ede2f6', '#d9f2f2'];
-
-/** Gives every row of the same invoice file one background colour. */
-function colorInvoices_(sheet) {
-  const n = sheet.getLastRow() - 1;
-  if (n < 1) return;
-  const ids = sheet.getRange(2, DCOL['文件ID'], n, 1).getValues();
-  // Rows of one invoice share a file ID and sit together after sortDirect_.
-  const colors = [];
-  let k = -1;
-  ids.forEach(function (r, i) {
-    if (i === 0 || r[0] !== ids[i - 1][0]) k++;
-    const row = [];
-    for (let c = 0; c < DIRECT_HEADERS.length; c++) row.push(INVOICE_COLORS[k % INVOICE_COLORS.length]);
-    colors.push(row);
-  });
-  sheet.getRange(2, 1, n, DIRECT_HEADERS.length).setBackgrounds(colors);
 }
 
 /**
@@ -269,33 +209,20 @@ function listInvoiceFiles_(folder, supplier) {
   return out;
 }
 
-/** Sheet rows for one invoice file: one per line item, or one placeholder. */
-function buildDirectRows_(text, file, folderSupplier) {
+/** One 直采汇总 row for an invoice file. */
+function buildInvoiceRow_(text, file, folderSupplier) {
   const inv = parseInvoiceText(text);
   const items = parseLineItems(text);
   const name = file.getName();
   // Supplier subfolder name beats OCR: it is what the user chose to call them.
   const supplier = folderSupplier || inv.supplier || name.replace(/\.[^.]+$/, '');
-  const check = checkTotals(items, inv);
-  const date = parseInvoiceDate(inv.date);
-  // Invoice totals go on the invoice's first row only, so summing the
-  // columns over the sheet doesn't count an invoice once per line.
   let gross = inv.total, net = inv.net;
   if (net === '' && gross !== '' && inv.vat !== '') net = Math.round((gross - inv.vat) * 100) / 100;
   if (gross === '' && net !== '' && inv.vat !== '') gross = Math.round((net + inv.vat) * 100) / 100;
-  const base = function (i, item) {
-    const spec = item ? parseSpec(item.desc) : {};
-    return [
-      date, supplier, inv.invoiceNo, i + 1,
-      item ? item.desc : '(未识别到明细，请打开发票)',
-      spec.brand || '', spec.capacity || '', spec.speed || '',
-      item ? (spec.partNo || partFromDesc(item.desc)) : '',
-      item ? item.qty : '', item ? item.price : '', item ? item.amount : '',
-      i === 0 ? gross : '', i === 0 ? net : '',
-      check, '', file.getUrl(), new Date(), file.getId(),
-    ];
-  };
-  return items.length ? items.map(function (it, i) { return base(i, it); }) : [base(0, null)];
+  return [
+    parseInvoiceDate(inv.date), supplier, inv.invoiceNo, countUnits(items), net, gross,
+    file.getUrl(), '', '', checkTotals(items, inv), file.getId(),
+  ];
 }
 
 /**
@@ -358,16 +285,21 @@ function docToText_(body) {
 // Sheet / Drive helpers
 // ---------------------------------------------------------------------------
 
+/** Renames a tab to "<name>(旧版 <time>)" so a fresh one can be built. */
+function backupSheet_(sheet) {
+  sheet.setName(sheet.getName() + '(旧版 ' +
+    Utilities.formatDate(new Date(), CONFIG.TIMEZONE, 'yyyy-MM-dd HH:mm') + ')');
+}
+
 function getDirectSheet_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sheet = ss.getSheetByName(DIRECT.SHEET_NAME);
-  // A tab from an older layout is kept (renamed, notes intact) and a fresh
-  // one is rebuilt from the Drive files, so column changes need no hand work.
+  // A tab with another layout (including an earlier hand-made one) is kept
+  // under a new name, and a fresh one is rebuilt from the Drive files.
   if (sheet && sheet.getLastRow() > 0) {
     const head = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
     if (head.join('|') !== DIRECT_HEADERS.join('|')) {
-      sheet.setName(DIRECT.SHEET_NAME + '(旧版 ' +
-        Utilities.formatDate(new Date(), CONFIG.TIMEZONE, 'yyyy-MM-dd HH:mm') + ')');
+      backupSheet_(sheet);
       sheet = null;
     }
   }
@@ -379,11 +311,11 @@ function getDirectSheet_() {
     const max = sheet.getMaxRows();
     sheet.getRange(1, DCOL['发票日期'], max, 1).setNumberFormat('yyyy-mm-dd');
     sheet.getRange(1, DCOL['发票号'], max, 1).setNumberFormat('@');
-    sheet.getRange(1, DCOL['单价'], max, 1).setNumberFormat('£#,##0.00##');
-    sheet.getRange(1, DCOL['金额'], max, 3).setNumberFormat('£#,##0.00');
-    sheet.getRange(1, DCOL['同步时间'], max, 1).setNumberFormat('yyyy-mm-dd hh:mm');
-    sheet.setColumnWidth(DCOL['商品描述'], 380);
-    sheet.setColumnWidth(DCOL['行号'], 50);
+    sheet.getRange(1, DCOL['不含VAT'], max, 2).setNumberFormat('£#,##0.00');
+    sheet.getRange(1, DCOL['出口日期(手填)'], max, 1).setNumberFormat('yyyy-mm-dd');
+    sheet.getRange(1, DCOL['出口单号(手填)'], max, 1).setNumberFormat('@');
+    sheet.setColumnWidth(DCOL['供应商'], 180);
+    sheet.setColumnWidth(DCOL['发票链接'], 90);
     sheet.hideColumns(DCOL['文件ID']);
   }
   return sheet;
@@ -427,8 +359,32 @@ function getSupplierSheet_() {
     sheet.setColumnWidth(1, 180);
     sheet.setColumnWidth(2, 380);
     sheet.setColumnWidth(3, 420);
+    PropertiesService.getScriptProperties().setProperty(SEEDED_KEY,
+      JSON.stringify(SUPPLIER_SEED.map(function (r) { return r[0]; })));
   }
+  seedNewSuppliers_(sheet);
   return sheet;
+}
+
+/** Appends SUPPLIER_SEED entries added to the code since the tab was made. */
+function seedNewSuppliers_(sheet) {
+  const props = PropertiesService.getScriptProperties();
+  const done = JSON.parse(props.getProperty(SEEDED_KEY) || '[]');
+  const have = {};
+  if (sheet.getLastRow() > 1) {
+    sheet.getRange(2, 1, sheet.getLastRow() - 1, 1).getValues().forEach(function (r) {
+      have[String(r[0]).trim().toLowerCase()] = true;
+    });
+  }
+  // Tabs made before seeding was tracked: treat what is there as done.
+  if (!props.getProperty(SEEDED_KEY)) Object.keys(have).forEach(function (k) { done.push(k); });
+  const fresh = SUPPLIER_SEED.filter(function (r) {
+    return done.indexOf(r[0]) < 0 && done.indexOf(r[0].toLowerCase()) < 0 && !have[r[0].toLowerCase()];
+  });
+  if (fresh.length) {
+    sheet.getRange(sheet.getLastRow() + 1, 1, fresh.length, SUPPLIER_HEADERS.length).setValues(fresh);
+  }
+  props.setProperty(SEEDED_KEY, JSON.stringify(done.concat(SUPPLIER_SEED.map(function (r) { return r[0]; }))));
 }
 
 /** [{name, emails}] from 「直采供应商」; blank names are ignored. */
@@ -501,14 +457,22 @@ function parseInvoiceText(text) {
       l.length <= 60 && !/registered|company\s*(no|number)|vat/i.test(l);
   });
 
-  const invNo = all.match(
-    /invoice\s*(?:no\.?|number|num|#)\s*[:#.]?\s*([A-Z0-9][A-Z0-9\-\/]{2,})/i) ||
-    all.match(/\b(?:inv|invoice)\s*[:#]\s*([A-Z0-9][A-Z0-9\-\/]{2,})/i) ||
-    all.match(/\b(INV[-\s]?\d{3,})\b/i);
+  // The number must contain a digit: when OCR puts labels on one line and
+  // values on the next ("Invoice Date Invoice Number"), "Num" + "ber" would
+  // otherwise read as an invoice number.
+  const CODE = '([A-Z0-9][A-Z0-9\\-\\/]{2,})(?<=\\d[A-Z0-9\\-\\/]*)';
+  const invNo = all.match(new RegExp('invoice\\s*(?:no\\.?|number|#)\\s*[:#.]?\\s*' + CODE, 'i')) ||
+    all.match(new RegExp('\\b(?:inv|invoice)\\s*[:#]\\s*' + CODE, 'i')) ||
+    all.match(/\b(INV[-\s]?\d{3,})\b/i) ||
+    all.match(/\b([A-Z]{2,4}-\d{4,})\b/);
 
   const DATE = '(\\d{1,2}[\\/.\\-]\\d{1,2}[\\/.\\-]\\d{2,4}|\\d{1,2}(?:st|nd|rd|th)?\\s+[A-Za-z]{3,9},?\\s+\\d{4}|[A-Za-z]{3,9}\\s+\\d{1,2},?\\s+\\d{4}|\\d{4}-\\d{2}-\\d{2})';
-  const date = all.match(new RegExp('(?:invoice|tax\\s*point)?\\s*date\\s*[:\\-]?\\s*\\n?\\s*' + DATE, 'i')) ||
-    all.match(new RegExp(DATE));
+  // Invoice/tax-point date first; never the due date.
+  const date = all.match(new RegExp('(?:invoice|tax\\s*point)\\s*date\\s*[:\\-]?\\s*' + DATE, 'i')) ||
+    // "Invoice Date Invoice Number" / "10 Sep 2026 IV-582488"
+    all.match(new RegExp('invoice\\s*date[^\\n]*\\n\\s*' + DATE, 'i')) ||
+    all.match(new RegExp('(?:^|[^a-z])(?<!due\\s)date\\s*[:\\-]?\\s*' + DATE, 'im')) ||
+    all.match(new RegExp('^(?!.*\\bdue\\b).*?' + DATE, 'im'));
 
   const vatNo = all.match(/\bVAT\s*(?:reg(?:istration)?\.?\s*)?(?:no\.?|number|#)?\s*[:.]?\s*(GB\s?\d{3}\s?\d{4}\s?\d{2}|\d{3}\s?\d{4}\s?\d{2})\b/i);
 
@@ -537,7 +501,9 @@ const VAT_RATE = '(?:\\s+\\d{1,2}(?:\\.\\d+)?\\s?%)?';
 const ROW_RE = new RegExp('^(.*?[A-Za-z].*?)\\s+' + QTY + '\\s+' + PRICE + VAT_RATE + '\\s+' + MONEY + '\\s*$');
 // "20 Samsung 32GB ... £40.00 £800.00" (quantity column first).
 const ROW_QTY_FIRST_RE = new RegExp('^' + QTY + '\\s+(.*?[A-Za-z].*?)\\s+' + PRICE + VAT_RATE + '\\s+' + MONEY + '\\s*$');
-const MONEY_ONLY_RE = new RegExp('^' + MONEY + '$');
+// A column title on its own line ("Unit Price", "VAT", "Amount GBP").
+const HEADER_WORDS_RE = /^((qty|quantity|unit|price|rate|vat|tax|amount|total|net|gross|gbp|£|ex|inc|excl|incl|%|\(|\))\s*)+$/i;
+const PRICE_ONLY_RE = new RegExp('^' + PRICE + '$');
 const num_ = function (s) { return parseFloat(String(s).replace(/,/g, '')); };
 const near_ = function (a, b) { return Math.abs(a - b) < 0.015; };
 
@@ -562,7 +528,10 @@ function parseLineItems(text) {
   // seller's VAT number above the items. ROW_RE alone is strict enough then.
   if (head >= 0) {
     lines = lines.slice(head + 1);
-    const end = lines.findIndex(function (l) { return /^(sub\s*-?\s*total|total|net\b|vat\b)/i.test(l); });
+    // A totals line carries an amount; a bare "VAT" is just a column title.
+    const end = lines.findIndex(function (l) {
+      return /^(sub\s*-?\s*total|total|net\b|vat\b)/i.test(l) && /\d/.test(l);
+    });
     if (end >= 0) lines = lines.slice(0, end);
   }
 
@@ -580,11 +549,26 @@ function parseLineItems(text) {
   const descs = [], qtys = [], money = [];
   lines.forEach(function (l) {
     if (/^\d{1,5}$/.test(l)) qtys.push(+l);
-    else if (MONEY_ONLY_RE.test(l)) money.push(num_(l.match(MONEY_ONLY_RE)[1]));
-    else if (/[A-Za-z]/.test(l) && !/^(qty|quantity|price|unit price|amount|rate|total)$/i.test(l)) descs.push(l);
+    else if (/^\d{1,2}(\.\d+)?\s?%$/.test(l)) return;
+    else if (PRICE_ONLY_RE.test(l)) money.push(num_(l.match(PRICE_ONLY_RE)[1]));
+    else if (/[A-Za-z]/.test(l) && !HEADER_WORDS_RE.test(l)) descs.push(l);
   });
   const n = descs.length;
-  if (!n || money.length !== 2 * n) return [];
+  if (!n) return [];
+  // Chaps-style columns: qty "16.00" looks like money, so all n quantities,
+  // prices and amounts land in `money` (VAT "20%" lines are dropped above).
+  if (!qtys.length && money.length === 3 * n) {
+    const cand = [
+      descs.map(function (d, i) { return [money[i], money[n + i], money[2 * n + i]]; }),
+      descs.map(function (d, i) { return [money[3 * i], money[3 * i + 1], money[3 * i + 2]]; }),
+    ];
+    const ok = cand.filter(function (c) { return c.every(function (x) { return near_(x[0] * x[1], x[2]); }); });
+    const use3 = ok.length ? ok[0] : cand[0];
+    return descs.map(function (d, i) {
+      return { desc: cleanDesc_(d), qty: use3[i][0], price: use3[i][1], amount: use3[i][2] };
+    });
+  }
+  if (money.length !== 2 * n) return [];
   if (qtys.length !== n) {
     // "8gb ... KVR24R17S4/8 1Rx4 12" -> qty 12 sits at the end of the text.
     const tail = descs.map(function (d) { return d.match(/^(.*\S)\s+(\d{1,5})$/); });
@@ -598,12 +582,20 @@ function parseLineItems(text) {
   const pairs = descs.map(function (d, i) { return { p: money[2 * i], a: money[2 * i + 1] }; });
   const fits = function (pa) { return pa.every(function (x, i) { return near_(qtys[i] * x.p, x.a); }); };
   const use = fits(pairs) && !fits(blocks) ? pairs : blocks;
-  return descs.map(function (d, i) { return { desc: d, qty: qtys[i], price: use[i].p, amount: use[i].a }; });
+  return descs.map(function (d, i) { return { desc: cleanDesc_(d), qty: qtys[i], price: use[i].p, amount: use[i].a }; });
 }
 
 /** Re-joins part numbers broken at a line wrap: "HMA82GR7JJR8N- VK" -> "HMA82GR7JJR8N-VK". */
 function cleanDesc_(d) {
   return String(d).replace(/([A-Z0-9])-\s+(?=[A-Z0-9])/g, '$1-').replace(/\s+/g, ' ').trim();
+}
+
+/** Units on an invoice: line quantities, not counting postage/delivery lines. */
+function countUnits(items) {
+  if (!items.length) return '';
+  return items.reduce(function (n, it) {
+    return /postage|delivery|shipping|carriage/i.test(it.desc) ? n : n + it.qty;
+  }, 0);
 }
 
 /** Whether the lines add up to the invoice's own subtotal (or total). */
@@ -615,48 +607,6 @@ function checkTotals(items, inv) {
   if (near_(sum, ref)) return '✓ 明细合计=发票小计';
   return '⚠ 明细合计£' + sum.toFixed(2) + ' ≠ 小计£' + Number(ref).toFixed(2);
 }
-
-/** Part number for lines parseSpec misses: last code-like token with letters and digits. */
-function partFromDesc(desc) {
-  const toks = String(desc).split(/\s+/).filter(function (t) {
-    return t.length >= 6 && /[A-Z]/i.test(t) && /\d/.test(t) &&
-      !/^PC\d|^DDR\d|^\d+(gb|tb|mhz)$/i.test(t) && !/^\dRx\d$/i.test(t);
-  });
-  return toks.length ? toks[toks.length - 1].toUpperCase() : '';
-}
-
-/**
- * Per-supplier totals from 直采记录 rows ({supplier, fileId, date, desc, qty,
- * net, gross, check}), plus a final 合计 row. Invoices are counted by file;
- * postage/delivery lines don't count as goods.
- */
-function summarize(rows) {
-  const by = {};
-  rows.forEach(function (r) {
-    if (!r.supplier) return;
-    const s = by[r.supplier] || (by[r.supplier] = { files: {}, flagged: {}, qty: 0, net: 0, gross: 0, last: '' });
-    s.files[r.fileId] = true;
-    if (String(r.check).indexOf('⚠') === 0) s.flagged[r.fileId] = true;
-    if (typeof r.qty === 'number' && !/postage|delivery|shipping|carriage/i.test(r.desc)) s.qty += r.qty;
-    if (typeof r.net === 'number') s.net += r.net;
-    if (typeof r.gross === 'number') s.gross += r.gross;
-    const isDate = Object.prototype.toString.call(r.date) === '[object Date]';
-    if (isDate && (!s.last || r.date > s.last)) s.last = r.date;
-  });
-  const total = ['合计', 0, 0, 0, 0, '', 0];
-  const out = Object.keys(by).sort().map(function (name) {
-    const s = by[name];
-    const row = [name, Object.keys(s.files).length, s.qty, round2_(s.net), round2_(s.gross),
-      s.last, Object.keys(s.flagged).length];
-    [1, 2, 3, 4, 6].forEach(function (i) { total[i] += row[i]; });
-    return row;
-  });
-  total[3] = round2_(total[3]);
-  total[4] = round2_(total[4]);
-  return out.concat([total]);
-}
-
-function round2_(x) { return Math.round(x * 100) / 100; }
 
 const MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
 
@@ -676,6 +626,6 @@ function parseInvoiceDate(s) {
 
 if (typeof module !== 'undefined') {
   Object.assign(module.exports, { parseInvoiceText: parseInvoiceText, parseLineItems: parseLineItems,
-    checkTotals: checkTotals, partFromDesc: partFromDesc, parseInvoiceDate: parseInvoiceDate,
-    summarize: summarize });
+    countUnits: countUnits,
+    checkTotals: checkTotals, parseInvoiceDate: parseInvoiceDate });
 }
