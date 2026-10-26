@@ -4,10 +4,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository contents
 
-This repo currently holds a single tool: `tools/xero-dhl-invoice/` — parses DHL
-Commercial Invoice PDFs (generated per shipment) and creates matching **Draft**
-sales invoices in Xero via the Accounting API. Everything below refers to that
-tool unless noted otherwise.
+This repo holds two independent tools:
+
+- `tools/xero-dhl-invoice/` — parses DHL Commercial Invoice PDFs (generated per
+  shipment) and creates matching **Draft** sales invoices in Xero via the
+  Accounting API. Everything below refers to that tool unless noted otherwise.
+- `tools/ebay-purchase-sheet/` — a Google Apps Script (`Code.gs`, bound to the
+  "eBay 采购记录（自动同步）" spreadsheet) that parses eBay "Order confirmed"
+  Gmail emails into a purchase log sheet daily at 08:00 Europe/London, and
+  marks rows cancelled/refunded from eBay's notification emails. Deployed by
+  pasting `Code.gs` into the sheet's Apps Script editor and running `setup()`
+  once; see its README. The parsers are pure functions tested offline with
+  `node test.js` (the `module.exports` guard at the bottom of `Code.gs` is
+  for that and is a no-op in Apps Script).
 
 ## Commands
 
