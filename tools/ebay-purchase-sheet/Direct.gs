@@ -1,8 +1,10 @@
 /**
  * Direct-supplier invoices -> "直采记录" tab.
  *
- * Source: the Drive folder 「直采发票」. Every PDF/image put there (saved
- * from email, WhatsApp, etc.) is OCR'd once and becomes one row. Email is
+ * Source: the Drive folder 「直采发票」 and its subfolders (one per supplier,
+ * e.g. 直采发票/Steve). Every PDF/image put there (saved from email,
+ * WhatsApp, etc.) is OCR'd once and becomes one row; moving a file between
+ * subfolders later does not create a second row (rows are keyed by file ID). Email is
  * deliberately not read: supplier threads mix invoices with quotes and
  * chat, and one folder is a predictable single place to drop invoices.
  *
@@ -54,13 +56,11 @@ function syncDirect_() {
   const seen = indexDirectRows_(sheet);
   const rows = [];
 
-  const it = getDirectFolder_().getFiles();
-  while (it.hasNext()) {
-    const file = it.next();
-    if (seen[file.getId()] || OCR_MIME.indexOf(file.getMimeType()) < 0) continue;
-    seen[file.getId()] = true;
-    rows.push(buildDirectRow_(parseInvoiceText(ocrFile_(file.getId())), file));
-  }
+  listInvoiceFiles_(getDirectFolder_(), '').forEach(function (f) {
+    if (seen[f.file.getId()]) return;
+    seen[f.file.getId()] = true;
+    rows.push(buildDirectRow_(parseInvoiceText(ocrFile_(f.file.getId())), f.file, f.supplier));
+  });
 
   if (rows.length) {
     sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, DIRECT_HEADERS.length).setValues(rows);
@@ -70,13 +70,33 @@ function syncDirect_() {
   return rows.length;
 }
 
-function buildDirectRow_(inv, file) {
+/**
+ * Every PDF/image in `folder` and its subfolders. A file inside a subfolder
+ * (e.g. 直采发票/Steve/) gets that top-level subfolder's name as supplier.
+ */
+function listInvoiceFiles_(folder, supplier) {
+  const out = [];
+  const files = folder.getFiles();
+  while (files.hasNext()) {
+    const file = files.next();
+    if (OCR_MIME.indexOf(file.getMimeType()) >= 0) out.push({ file: file, supplier: supplier });
+  }
+  const subs = folder.getFolders();
+  while (subs.hasNext()) {
+    const sub = subs.next();
+    Array.prototype.push.apply(out, listInvoiceFiles_(sub, supplier || sub.getName()));
+  }
+  return out;
+}
+
+function buildDirectRow_(inv, file, folderSupplier) {
   const spec = parseSpec(inv.items.join(' / '));
   const name = file.getName();
   return [
     new Date(),
     inv.date,
-    inv.supplier || name.replace(/\.[^.]+$/, ''),
+    // Supplier subfolder name beats OCR: it is what the user chose to call them.
+    folderSupplier || inv.supplier || name.replace(/\.[^.]+$/, ''),
     inv.invoiceNo,
     inv.items.join('\n'),
     spec.brand,
