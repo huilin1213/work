@@ -3,7 +3,7 @@
  *
  * Reads eBay "Order confirmed" emails from Gmail, appends one row per
  * purchased item to the sheet, and marks rows cancelled/refunded when the
- * matching eBay notification arrives. Runs daily at 08:00 (Europe/London)
+ * matching eBay notification arrives. Runs daily at 09:00 and 20:00 (Europe/London)
  * via a time-driven trigger installed by setup().
  *
  * Install: bind this script to the target spreadsheet (Extensions > Apps
@@ -13,7 +13,8 @@
 const CONFIG = {
   SHEET_NAME: 'eBay采购记录',
   TIMEZONE: 'Europe/London',
-  TRIGGER_HOUR: 8,
+  // Hours (24h, TIMEZONE) at which dailySync runs every day.
+  TRIGGER_HOURS: [9, 20],
   // setup() backfills everything since this date (Gmail search syntax).
   BACKFILL_SINCE: '2026/07/01',
   // Daily runs re-scan this window; already-recorded orders are skipped, so
@@ -42,8 +43,14 @@ function setup() {
   getSheet_();
   const added = sync_('after:' + CONFIG.BACKFILL_SINCE);
   installTrigger_();
-  Logger.log('Setup done. Backfilled %s item rows. Daily trigger at %s:00 %s.',
-    added, CONFIG.TRIGGER_HOUR, CONFIG.TIMEZONE);
+  Logger.log('Setup done. Backfilled %s item rows. Daily triggers at %s:00 %s.',
+    added, CONFIG.TRIGGER_HOURS.join(':00, '), CONFIG.TIMEZONE);
+}
+
+/** Run by hand after changing CONFIG.TRIGGER_HOURS: reinstalls the schedule only. */
+function updateSchedule() {
+  installTrigger_();
+  Logger.log('Daily triggers now at %s:00 %s.', CONFIG.TRIGGER_HOURS.join(':00, '), CONFIG.TIMEZONE);
 }
 
 /** Called by the daily trigger. */
@@ -228,9 +235,11 @@ function installTrigger_() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (t.getHandlerFunction() === 'dailySync') ScriptApp.deleteTrigger(t);
   });
-  ScriptApp.newTrigger('dailySync').timeBased()
-    .atHour(CONFIG.TRIGGER_HOUR).nearMinute(0).everyDays(1)
-    .inTimezone(CONFIG.TIMEZONE).create();
+  CONFIG.TRIGGER_HOURS.forEach(function (hour) {
+    ScriptApp.newTrigger('dailySync').timeBased()
+      .atHour(hour).nearMinute(0).everyDays(1)
+      .inTimezone(CONFIG.TIMEZONE).create();
+  });
 }
 
 // ---------------------------------------------------------------------------
