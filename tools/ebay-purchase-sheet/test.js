@@ -105,4 +105,18 @@ assert.strictEqual(s3.brand, 'Samsung');
 assert.strictEqual(s3.speed, '2133');
 assert.strictEqual(s3.partNo, 'M393A2G40DB0-CPB');
 
+// Titles from the first real backfill where the part number was missed.
+const cases = [
+  ['HYNIX 128GB SERVER RAM KIT (4X 32GB) PC4-2666V-RB2 RDIMM HMA84GR7CJR4N', 'HMA84GR7CJR4N'],
+  ['SAMSUNG 64GB SERVER RAM KIT (4x16GB) PC4-2133P RDIMM REG ECC 2Rx4 M393A2G40DB0', 'M393A2G40DB0'],
+  ['SK Hynix 32GB PC4-2666V DDR4 ECC Registered Server Memory HMA84GR7CJR4N -VK RAM', 'HMA84GR7CJR4N-VK'],
+  ['Micron 32GB 2Rx4 PC4-2133P Registered ECC Server RAM MTA36ASF4G72PZ-2G1A1 2016', 'MTA36ASF4G72PZ-2G1A1'],
+  ['6 x Integral 32GB DDR4 2666MHZ IN4T32GREMSX2 J21 10 SPH Server RAM', 'IN4T32GREMSX2'],
+];
+cases.forEach(([title, pn]) => assert.strictEqual(parseSpec(title).partNo, pn, title));
+assert.strictEqual(parseSpec('6 x Integral 32GB DDR4 2666MHZ IN4T32GREMSX2').brand, 'Integral');
+assert.strictEqual(parseSpec('6 x Integral 32GB DDR4 2666MHZ IN4T32GREMSX2').perListing, 6);
+assert.strictEqual(parseSpec('Micron 32GB 2RX4 PC4-3200AA-RB2-12 Server RAM MTA36ASF4G72PZ X 16').perListing, 16);
+assert.strictEqual(parseSpec('SERVER MEMORY MODULES - 2 x 32GB (total 64GB) pc4 2133mz').perListing, 2);
+
 console.log('all parser tests passed');

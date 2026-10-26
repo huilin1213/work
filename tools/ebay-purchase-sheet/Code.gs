@@ -52,6 +52,29 @@ function dailySync() {
   Logger.log('Daily sync: %s new item rows.', added);
 }
 
+/**
+ * Run by hand after updating the parser: re-derives 品牌/单条容量/频率/料号/
+ * 每件条数 from each row's title, filling only cells that are still empty so
+ * hand-entered values are kept.
+ */
+function reparseSpecs() {
+  const sheet = getSheet_();
+  const n = sheet.getLastRow() - 1;
+  if (n < 1) return;
+  const titles = sheet.getRange(2, COL['商品标题'], n, 1).getValues();
+  const range = sheet.getRange(2, COL['品牌'], n, 5);
+  const cells = range.getValues();
+  let filled = 0;
+  titles.forEach(function (r, i) {
+    const s = parseSpec(String(r[0]));
+    [s.brand, s.capacity, s.speed, s.partNo, s.perListing].forEach(function (v, j) {
+      if (cells[i][j] === '' && v !== '') { cells[i][j] = v; filled++; }
+    });
+  });
+  range.setValues(cells);
+  Logger.log('reparseSpecs: filled %s empty cells.', filled);
+}
+
 // ---------------------------------------------------------------------------
 // Sync
 // ---------------------------------------------------------------------------
@@ -314,7 +337,7 @@ function parseStatusSubject(subject) {
 const PC4_SPEED = { '17000': '2133', '19200': '2400', '21300': '2666', '23400': '2933', '25600': '3200' };
 const BRANDS = [
   [/sk\s*-?hynix|hynix/i, 'SK Hynix'], [/samsung/i, 'Samsung'], [/micron/i, 'Micron'],
-  [/crucial/i, 'Crucial'], [/kingston/i, 'Kingston'], [/\bdell\b/i, 'Dell'],
+  [/crucial/i, 'Crucial'], [/integral/i, 'Integral'], [/kingston/i, 'Kingston'], [/\bdell\b/i, 'Dell'],
   [/\bhpe?\b/i, 'HP'], [/lenovo/i, 'Lenovo'], [/nanya/i, 'Nanya'],
 ];
 
@@ -332,7 +355,9 @@ function parseSpec(title) {
   const lead = t.match(/^\s*(\d+)\s*x\s+/i);                  // "5x SK Hynix 32GB"
   if (kit) { perListing = +kit[1]; capacity = kit[2] + 'GB'; }
   else {
+    const tail = t.match(/\bx\s*(\d+)\s*$/i);                // "... MTA36ASF4G72PZ X 16"
     if (lead) perListing = +lead[1];
+    else if (tail) perListing = +tail[1];
     const cap = t.match(/(\d+)\s*GB/i);
     if (cap) capacity = cap[1] + 'GB';
   }
@@ -347,13 +372,15 @@ function parseSpec(title) {
     if (rc) speed = rc[1];
   }
 
-  const part = t.match(/\b(HMAA?[0-9A-Z]+-[0-9A-Z]+|HMCG[0-9A-Z]+-[0-9A-Z]+|M3[29]3[0-9A-Z]+-[0-9A-Z]+|M321[0-9A-Z]+-[0-9A-Z]+|MTA[0-9A-Z]+-[0-9A-Z]+|KSM[0-9A-Z\/]+)\b/i);
+  // Dash suffix is optional and sellers sometimes put a space before it
+  // ("HMA84GR7CJR4N -VK").
+  const part = t.match(/\b((?:HMAA?|HMCG|M3[29]3|M321|MTA|IN4T)[0-9A-Z]{6,}(?:\s?-[0-9A-Z]+)*|KSM[0-9A-Z\/]+)/i);
 
   return {
     brand: brand,
     capacity: capacity,
     speed: speed,
-    partNo: part ? part[1].toUpperCase() : '',
+    partNo: part ? part[1].replace(/\s/g, '').toUpperCase() : '',
     perListing: perListing,
   };
 }
