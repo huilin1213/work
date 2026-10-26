@@ -2,7 +2,7 @@
  * Direct-supplier invoices -> "直采记录" tab.
  *
  * Sources:
- *   1. Gmail messages labelled 「直采发票」: PDF/image attachments are saved
+ *   1. Gmail messages labelled 「直采发票」: PDF attachments are saved
  *      into the Drive folder below, then OCR'd. Messages with no attachment
  *      are parsed from the email body instead.
  *   2. Drive folder 「直采发票」: any PDF/image dropped in by hand (e.g.
@@ -72,8 +72,10 @@ function syncDirect_() {
     if (msg.getFrom().toLowerCase().indexOf(me) >= 0) return;
     seen.msg[msg.getId()] = true;
     const sender = senderName(msg.getFrom());
-    const files = msg.getAttachments().filter(function (a) {
-      return OCR_MIME.indexOf(a.getContentType()) >= 0;
+    // Email invoices are PDFs; photos in long supplier threads are usually
+    // stock pictures, not invoices, so only PDFs are taken from Gmail.
+    const files = msg.getAttachments({ includeInlineImages: false }).filter(function (a) {
+      return a.getContentType() === 'application/pdf';
     });
     if (!files.length) {
       const body = msg.getPlainBody();
