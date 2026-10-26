@@ -149,7 +149,12 @@ function docToText_(body) {
   const out = [];
   for (let i = 0; i < body.getNumChildren(); i++) {
     const el = body.getChild(i);
-    if (el.getType() === DocumentApp.ElementType.TABLE) {
+    const type = el.getType();
+    if (type === DocumentApp.ElementType.PARAGRAPH) {
+      out.push(el.asParagraph().getText());
+    } else if (type === DocumentApp.ElementType.LIST_ITEM) {
+      out.push(el.asListItem().getText());
+    } else if (type === DocumentApp.ElementType.TABLE) {
       const t = el.asTable();
       for (let r = 0; r < t.getNumRows(); r++) {
         const row = t.getRow(r);
@@ -159,9 +164,9 @@ function docToText_(body) {
         }
         out.push(cells.join('\t'));
       }
-    } else {
-      out.push(el.asText ? el.asText().getText() : el.getText());
     }
+    // Anything else (images, drawings, page breaks: "UNSPECIFIED"/
+    // "UNSUPPORTED" in OCR output) has no text and cannot be cast; skip it.
   }
   return out.join('\n');
 }
