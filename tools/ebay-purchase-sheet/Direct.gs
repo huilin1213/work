@@ -65,19 +65,27 @@ function syncDirect_() {
 
   if (rows.length) {
     sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, DIRECT_HEADERS.length).setValues(rows);
-    sheet.getRange(2, 1, sheet.getLastRow() - 1, DIRECT_HEADERS.length).sort([
-      { column: DCOL['发票日期'], ascending: false },
-      { column: DCOL['发票号'], ascending: true },
-      { column: DCOL['行号'], ascending: true },
-    ]);
   }
+  sortDirect_(sheet);
   colorInvoices_(sheet);
   return rows.length;
 }
 
-/** Manual: re-apply the per-invoice colours, e.g. after deleting rows by hand. */
+/** Manual: re-sort and re-colour, e.g. after editing or deleting rows by hand. */
 function recolorDirect() {
-  colorInvoices_(getDirectSheet_());
+  const sheet = getDirectSheet_();
+  sortDirect_(sheet);
+  colorInvoices_(sheet);
+}
+
+/** Newest invoice first; each invoice's lines kept together and in order. */
+function sortDirect_(sheet) {
+  if (sheet.getLastRow() < 3) return;
+  sheet.getRange(2, 1, sheet.getLastRow() - 1, DIRECT_HEADERS.length).sort([
+    { column: DCOL['发票日期'], ascending: false },
+    { column: DCOL['文件ID'], ascending: true },
+    { column: DCOL['行号'], ascending: true },
+  ]);
 }
 
 // Light colours cycled per invoice; consecutive invoices never share one.
@@ -88,6 +96,7 @@ function colorInvoices_(sheet) {
   const n = sheet.getLastRow() - 1;
   if (n < 1) return;
   const ids = sheet.getRange(2, DCOL['文件ID'], n, 1).getValues();
+  // Rows of one invoice share a file ID and sit together after sortDirect_.
   const colors = [];
   let k = -1;
   ids.forEach(function (r, i) {
