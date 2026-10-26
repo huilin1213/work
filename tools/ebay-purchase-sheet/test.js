@@ -9,7 +9,7 @@ vm.createContext(ctx);
 // Apps Script loads every .gs file into one global scope; mimic that.
 ['Code.gs', 'Direct.gs'].forEach((f) =>
   vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx, { filename: f }));
-const { parseOrderEmail, parseStatusSubject, parseSpec, parseInvoiceText } = ctx.module.exports;
+const { parseOrderEmail, parseStatusSubject, parseSpec, parseInvoiceText, parseLineItems, checkTotals, partFromDesc, parseInvoiceDate } = ctx.module.exports;
 
 // Trimmed from a real eBay UK "Order confirmed" email (offer accepted, with
 // Buyer Protection fee), with tracking params and the delivery address removed.
@@ -146,8 +146,6 @@ assert.strictEqual(inv.vatNo, 'GB123456789');
 assert.strictEqual(inv.net, 1050);
 assert.strictEqual(inv.vat, 210);
 assert.strictEqual(inv.total, 1260);
-assert.strictEqual(inv.items.length, 2);
-assert.ok(inv.items[0].includes('M393A4K40CB2-CTD'));
 
 // Amounts on the line after the label (common when OCR splits table cells),
 // "Total VAT" wording, no VAT number, date written out.
@@ -173,7 +171,90 @@ assert.strictEqual(inv2.total, 1080);
 // Garbage in -> blanks out, never a throw.
 const empty = parseInvoiceText('');
 assert.strictEqual(empty.total, '');
-assert.strictEqual(empty.items.length, 0);
 
+
+// --- Line items ---
+// Header "Qty Description ..." and the seller VAT number above the items.
+const fict = parseLineItems(ocr);
+assert.strictEqual(fict.length, 2);
+assert.strictEqual(fict[0].qty, 20);
+assert.strictEqual(fict[0].desc, 'Samsung 32GB 2Rx4 PC4-2666V M393A4K40CB2-CTD');
+assert.strictEqual(fict[1].amount, 250);
+
+// Item table of a real supplier invoice (header/bank details left out).
+const steve = `INVOICE
+DATE Tuesday, September 22, 2026
+INVOICE# 220926-1
+DESCRIPTION QTY PRICE AMOUNT
+Faulty 32gb PC4-3200 ECC Reg Samsung M393A4G43AB3-CWEGY 1 £54.00 £54.00
+32gb PC4-2666 ECC Reg Hynix HMA84GR7AFR4N-VK 4 £54.00 £216.00
+16gb PC4-2400 ECC Reg Hynix HMA82GR7AFR8N-UH 1 £22.00 £22.00
+8gb PC4-2133 ECC Reg Kingston KTH-PL421/8G 4 £9.00 £36.00
+8gb PC4-2400 ECC Reg Kingston KVR24R17S4/8 1Rx4 12 £9.00 £108.00
+4gb PC4-2400 ECC Reg Crucial CT4G4RFS824A 2 £4.50 £9.00
+SUB-TOTAL £445.00
+VAT £89.00
+TOTAL £534.00`;
+const li = parseLineItems(steve);
+assert.strictEqual(li.length, 6);
+assert.deepStrictEqual(JSON.parse(JSON.stringify(li[1])),
+  { desc: '32gb PC4-2666 ECC Reg Hynix HMA84GR7AFR4N-VK', qty: 4, price: 54, amount: 216 });
+assert.strictEqual(li[4].desc, '8gb PC4-2400 ECC Reg Kingston KVR24R17S4/8 1Rx4');
+assert.strictEqual(li[4].qty, 12);
+const sInv = parseInvoiceText(steve);
+assert.strictEqual(sInv.invoiceNo, '220926-1');
+assert.strictEqual(checkTotals(li, sInv), '✓ 明细合计=发票小计');
+assert.ok(checkTotals(li.slice(1), sInv).startsWith('⚠'));
+assert.strictEqual(checkTotals([], sInv), '⚠ 未识别到明细');
+
+// Same invoice as OCR sometimes lays it out: one column after another.
+const cols = `DESCRIPTION
+QTY
+PRICE
+AMOUNT
+32gb PC4-2666 ECC Reg Hynix HMA84GR7AFR4N-VK
+8gb PC4-2400 ECC Reg Kingston KVR24R17S4/8 1Rx4
+4
+12
+£54.00
+£9.00
+£216.00
+£108.00
+SUB-TOTAL £324.00`;
+const lc = parseLineItems(cols);
+assert.strictEqual(lc.length, 2);
+assert.strictEqual(lc[1].qty, 12);
+assert.strictEqual(lc[1].price, 9);
+assert.strictEqual(lc[1].amount, 108);
+// Columnar with price/amount interleaved per row and qty glued to the text.
+const inter = `DESCRIPTION QTY PRICE AMOUNT
+32gb Hynix HMA84GR7AFR4N-VK 4
+8gb Kingston KVR24R17S4/8 1Rx4 12
+£54.00
+£216.00
+£9.00
+£108.00
+TOTAL £324.00`;
+const lt = parseLineItems(inter);
+assert.strictEqual(lt.length, 2);
+assert.strictEqual(lt[0].qty, 4);
+assert.strictEqual(lt[0].amount, 216);
+assert.strictEqual(lt[1].price, 9);
+// Tab-separated table cells (Doc table flattened by docToText_).
+const tab = parseLineItems('Description\tQty\tPrice\tAmount\n16gb Micron MTA18ASF2G72PZ\t3\t£21.00\t£63.00\nTotal £63.00');
+assert.strictEqual(tab.length, 1);
+assert.strictEqual(tab[0].qty, 3);
+
+assert.strictEqual(partFromDesc('8gb PC4-2133 ECC Reg Kingston KTH-PL421/8G'), 'KTH-PL421/8G');
+assert.strictEqual(partFromDesc('8gb PC4-2400 ECC Reg Kingston KVR24R17S4/8 1Rx4'), 'KVR24R17S4/8');
+assert.strictEqual(partFromDesc('4gb PC4-2400 ECC Reg Crucial CT4G4RFS824A'), 'CT4G4RFS824A');
+assert.strictEqual(partFromDesc('16gb PC4-2400 desktop dimm'), '');
+
+const d = (x) => { const v = parseInvoiceDate(x); return [v.getFullYear(), v.getMonth() + 1, v.getDate()].join('-'); };
+assert.strictEqual(d('September 22, 2026'), '2026-9-22');
+assert.strictEqual(d('21/10/2026'), '2026-10-21');
+assert.strictEqual(d('3 Oct 2026'), '2026-10-3');
+assert.strictEqual(d('2026-10-03'), '2026-10-3');
+assert.strictEqual(parseInvoiceDate('soon'), 'soon');
 
 console.log('all parser tests passed');
