@@ -9,7 +9,7 @@ vm.createContext(ctx);
 // Apps Script loads every .gs file into one global scope; mimic that.
 ['Code.gs', 'Direct.gs'].forEach((f) =>
   vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx, { filename: f }));
-const { parseOrderEmail, parseStatusSubject, parseSpec, parseInvoiceText, senderName } = ctx.module.exports;
+const { parseOrderEmail, parseStatusSubject, parseSpec, parseInvoiceText, senderName, stripQuoted } = ctx.module.exports;
 
 // Trimmed from a real eBay UK "Order confirmed" email (offer accepted, with
 // Buyer Protection fee), with tracking params and the delivery address removed.
@@ -174,6 +174,25 @@ assert.strictEqual(inv2.total, 1080);
 const empty = parseInvoiceText('');
 assert.strictEqual(empty.total, '');
 assert.strictEqual(empty.items.length, 0);
+
+// Supplier offer email replying in a long thread (shape of the real one
+// that produced junk rows): quoted history must go, and with no invoice
+// number it must not count as an invoice.
+const reply = `Hi Mandy, just a couple of examples from my 32gb and 16gb.
+>> 4 x 32gb PC4-2666 Hynix HMA84GR7AFR4N-VK @ £54 + VAT
+
+On Sat, 19 Sept 2026 at 10:01, Blue Bridgewell <contact@bluebridgewell.com>
+wrote:
+> Hi Steve, invoice please
+>> Total £500.00`;
+const own = stripQuoted(reply);
+assert.ok(!own.includes('wrote'), own);
+assert.ok(!own.includes('Total'), own);
+assert.ok(!own.includes('>>'), own);
+assert.ok(own.startsWith('Hi Mandy'));
+assert.strictEqual(parseInvoiceText(own).invoiceNo, '');
+assert.strictEqual(stripQuoted('Thanks\n\nOn Mon, 5 Oct 2026 at 09:00, X <x@y.com> wrote:\n> old'), 'Thanks\n');
+assert.strictEqual(parseInvoiceText('>> Invoice No: 7701\n>> Total £10.00').invoiceNo, '7701');
 
 assert.strictEqual(senderName('Dominic <cwl-uk@hotmail.com>'), 'Dominic');
 assert.strictEqual(senderName('"Jess Singleton" <j@restore.co.uk>'), 'Jess Singleton');

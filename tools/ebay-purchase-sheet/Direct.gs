@@ -78,9 +78,13 @@ function syncDirect_() {
       return a.getContentType() === 'application/pdf';
     });
     if (!files.length) {
-      const body = msg.getPlainBody();
+      // Only this message's own words: replies quote the whole thread, which
+      // would otherwise repeat the same lines once per reply.
+      const body = stripQuoted(msg.getPlainBody());
       const inv = parseInvoiceText(body);
-      if (!/invoice/i.test(msg.getSubject() + ' ' + body) || inv.total === '') return;
+      // A price list or offer in a body is not an invoice; require an
+      // invoice number and a total before treating it as one.
+      if (!inv.invoiceNo || inv.total === '') return;
       rows.push(buildDirectRow_(inv, sender || msg.getSubject(), '邮件正文', '', '', msg.getId()));
       return;
     }
@@ -234,6 +238,26 @@ function labelledAmount_(lines, labelRe, skipRe) {
   return found;
 }
 
+/**
+ * Drops quoted history from an email body: everything from the first
+ * "On ... wrote:" / "-----Original Message-----" / Outlook "From:" header
+ * line, plus any remaining ">"-quoted lines.
+ */
+function stripQuoted(body) {
+  const lines = String(body || '').split(/\r?\n/);
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (/^\s*On\b.*\bwrote:\s*$/i.test(l) ||
+        /^\s*On\b.*[^:]$/i.test(l) && /wrote:\s*$/i.test(lines[i + 1] || '') ||
+        /^\s*-{2,}\s*Original Message/i.test(l) ||
+        /^\s*From:\s.+/i.test(l) && /^\s*(Sent|Date):/i.test(lines[i + 1] || '')) break;
+    if (/^\s*>/.test(l)) continue;
+    out.push(l);
+  }
+  return out.join('\n');
+}
+
 /** "Dominic <x@y.com>" -> "Dominic"; bare address -> its domain name. */
 function senderName(from) {
   const m = String(from || '').match(/^\s*"?([^"<]+?)"?\s*<([^>]+)>/);
@@ -248,7 +272,7 @@ function senderName(from) {
  */
 function parseInvoiceText(text) {
   const lines = String(text || '').split(/\r?\n/)
-    .map(function (l) { return l.replace(/\s+/g, ' ').trim(); })
+    .map(function (l) { return l.replace(/^[\s>]+/, '').replace(/\s+/g, ' ').trim(); })
     .filter(function (l) { return l; });
   const all = lines.join('\n');
 
@@ -296,5 +320,6 @@ function parseInvoiceText(text) {
 }
 
 if (typeof module !== 'undefined') {
-  Object.assign(module.exports, { parseInvoiceText: parseInvoiceText, senderName: senderName });
+  Object.assign(module.exports, { parseInvoiceText: parseInvoiceText, senderName: senderName,
+    stripQuoted: stripQuoted });
 }
