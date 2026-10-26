@@ -70,7 +70,32 @@ function syncDirect_() {
       { column: DCOL['行号'], ascending: true },
     ]);
   }
+  colorInvoices_(sheet);
   return rows.length;
+}
+
+/** Manual: re-apply the per-invoice colours, e.g. after deleting rows by hand. */
+function recolorDirect() {
+  colorInvoices_(getDirectSheet_());
+}
+
+// Light colours cycled per invoice; consecutive invoices never share one.
+const INVOICE_COLORS = ['#fff2cc', '#ddebf7', '#e2efda', '#fce4d6', '#ede2f6', '#d9f2f2'];
+
+/** Gives every row of the same invoice file one background colour. */
+function colorInvoices_(sheet) {
+  const n = sheet.getLastRow() - 1;
+  if (n < 1) return;
+  const ids = sheet.getRange(2, DCOL['文件ID'], n, 1).getValues();
+  const colors = [];
+  let k = -1;
+  ids.forEach(function (r, i) {
+    if (i === 0 || r[0] !== ids[i - 1][0]) k++;
+    const row = [];
+    for (let c = 0; c < DIRECT_HEADERS.length; c++) row.push(INVOICE_COLORS[k % INVOICE_COLORS.length]);
+    colors.push(row);
+  });
+  sheet.getRange(2, 1, n, DIRECT_HEADERS.length).setBackgrounds(colors);
 }
 
 /**
