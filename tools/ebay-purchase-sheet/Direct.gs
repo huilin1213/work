@@ -62,16 +62,23 @@ function syncDirect_() {
 
   // 1. Gmail label. Attachments go into the folder first so every invoice
   //    file ends up in one place.
+  // Gmail labels whole conversations, so replies (ours and theirs) come back
+  // too: skip our own messages, and only keep attachment-less messages whose
+  // body actually reads like an invoice.
+  const me = Session.getEffectiveUser().getEmail().toLowerCase();
   const query = 'label:' + DIRECT.LABEL + ' ' + DIRECT.GMAIL_WINDOW;
   searchMessages_(query).forEach(function (msg) {
     if (seen.msg[msg.getId()]) return;
+    if (msg.getFrom().toLowerCase().indexOf(me) >= 0) return;
     seen.msg[msg.getId()] = true;
     const sender = senderName(msg.getFrom());
     const files = msg.getAttachments().filter(function (a) {
       return OCR_MIME.indexOf(a.getContentType()) >= 0;
     });
     if (!files.length) {
-      const inv = parseInvoiceText(msg.getPlainBody());
+      const body = msg.getPlainBody();
+      const inv = parseInvoiceText(body);
+      if (!/invoice/i.test(msg.getSubject() + ' ' + body) || inv.total === '') return;
       rows.push(buildDirectRow_(inv, sender || msg.getSubject(), '邮件正文', '', '', msg.getId()));
       return;
     }
