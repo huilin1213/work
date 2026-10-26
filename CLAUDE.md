@@ -18,7 +18,8 @@ This repo holds two independent tools:
   `node test.js` (the `module.exports` guards at the bottom of the `.gs`
   files are for that and are no-ops in Apps Script). `Direct.gs` in the same
   Apps Script project adds a "直采记录" tab for direct-supplier invoices
-  (Gmail label 「直采发票」 + Drive folder 「直采发票」), OCR'd for free via a
+  (source is only the Drive folder 「直采发票」 — email is deliberately not
+  read, since supplier threads mix invoices with quotes), OCR'd for free via a
   Drive PDF/image -> Google Doc copy and parsed with regex rules; it runs
   from `dailySync()` so both share one trigger. All `.gs` files share one
   global scope in Apps Script, so top-level names must stay unique across

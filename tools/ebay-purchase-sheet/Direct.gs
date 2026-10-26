@@ -1,12 +1,10 @@
 /**
  * Direct-supplier invoices -> "直采记录" tab.
  *
- * Sources:
- *   1. Gmail messages labelled 「直采发票」: PDF attachments are saved
- *      into the Drive folder below, then OCR'd. Messages with no attachment
- *      are parsed from the email body instead.
- *   2. Drive folder 「直采发票」: any PDF/image dropped in by hand (e.g.
- *      invoices received on WhatsApp) is OCR'd.
+ * Source: the Drive folder 「直采发票」. Every PDF/image put there (saved
+ * from email, WhatsApp, etc.) is OCR'd once and becomes one row. Email is
+ * deliberately not read: supplier threads mix invoices with quotes and
+ * chat, and one folder is a predictable single place to drop invoices.
  *
  * OCR uses Drive's free built-in PDF/image -> Google Doc conversion; fields
  * are then pulled out with regex rules, so every row starts as 「待核对」 for
@@ -15,17 +13,15 @@
 
 const DIRECT = {
   SHEET_NAME: '直采记录',
-  LABEL: '直采发票',
   FOLDER: '直采发票',
-  GMAIL_WINDOW: 'newer_than:60d',
   OCR_LANGUAGE: 'en',
   OWN_COMPANY: /blue\s*bridgewell/i,
 };
 
 const DIRECT_HEADERS = [
   '同步时间', '发票日期', '供应商', '发票号', '商品明细(识别)', '品牌', '单条容量',
-  '频率', '料号', '数量(手填)', '净额', 'VAT', '总额', '卖家VAT号', '来源',
-  '发票文件', '核对状态', '备注(手填)', '文件ID', '邮件ID',
+  '频率', '料号', '数量(手填)', '净额', 'VAT', '总额', '卖家VAT号', '文件名',
+  '发票文件', '核对状态', '备注(手填)', '文件ID',
 ];
 const DCOL = {};
 DIRECT_HEADERS.forEach(function (h, i) { DCOL[h] = i + 1; });
@@ -36,9 +32,8 @@ const OCR_MIME = ['application/pdf', 'image/jpeg', 'image/png', 'image/gif'];
 // Entry points
 // ---------------------------------------------------------------------------
 
-/** Run once by hand: creates the label, Drive folder and tab, then syncs. */
+/** Run once by hand: creates the Drive folder and tab, then syncs. */
 function setupDirect() {
-  if (!GmailApp.getUserLabelByName(DIRECT.LABEL)) GmailApp.createLabel(DIRECT.LABEL);
   const folder = getDirectFolder_();
   getDirectSheet_();
   const added = syncDirect_();
@@ -56,56 +51,15 @@ function syncDirectNow() {
 
 function syncDirect_() {
   const sheet = getDirectSheet_();
-  const folder = getDirectFolder_();
   const seen = indexDirectRows_(sheet);
   const rows = [];
 
-  // 1. Gmail label. Attachments go into the folder first so every invoice
-  //    file ends up in one place.
-  // Gmail labels whole conversations, so replies (ours and theirs) come back
-  // too: skip our own messages, and only keep attachment-less messages whose
-  // body actually reads like an invoice.
-  const me = Session.getEffectiveUser().getEmail().toLowerCase();
-  const query = 'label:' + DIRECT.LABEL + ' ' + DIRECT.GMAIL_WINDOW;
-  searchMessages_(query).forEach(function (msg) {
-    if (seen.msg[msg.getId()]) return;
-    if (msg.getFrom().toLowerCase().indexOf(me) >= 0) return;
-    seen.msg[msg.getId()] = true;
-    const sender = senderName(msg.getFrom());
-    // Email invoices are PDFs; photos in long supplier threads are usually
-    // stock pictures, not invoices, so only PDFs are taken from Gmail.
-    const files = msg.getAttachments({ includeInlineImages: false }).filter(function (a) {
-      return a.getContentType() === 'application/pdf';
-    });
-    if (!files.length) {
-      // Only this message's own words: replies quote the whole thread, which
-      // would otherwise repeat the same lines once per reply.
-      const body = stripQuoted(msg.getPlainBody());
-      const inv = parseInvoiceText(body);
-      // A price list or offer in a body is not an invoice; require an
-      // invoice number and a total before treating it as one.
-      if (!inv.invoiceNo || inv.total === '') return;
-      rows.push(buildDirectRow_(inv, sender || msg.getSubject(), '邮件正文', '', '', msg.getId()));
-      return;
-    }
-    files.forEach(function (att) {
-      const file = folder.createFile(att.copyBlob());
-      file.setDescription('来自邮件: ' + msg.getSubject());
-      seen.file[file.getId()] = true;
-      const inv = parseInvoiceText(ocrFile_(file.getId()));
-      rows.push(buildDirectRow_(inv, sender, '邮件附件', file.getUrl(), file.getId(), msg.getId()));
-    });
-  });
-
-  // 2. Files dropped into the Drive folder by hand.
-  const it = folder.getFiles();
+  const it = getDirectFolder_().getFiles();
   while (it.hasNext()) {
     const file = it.next();
-    if (seen.file[file.getId()] || OCR_MIME.indexOf(file.getMimeType()) < 0) continue;
-    seen.file[file.getId()] = true;
-    const inv = parseInvoiceText(ocrFile_(file.getId()));
-    const fallback = file.getName().replace(/\.[^.]+$/, '');
-    rows.push(buildDirectRow_(inv, fallback, 'Drive上传', file.getUrl(), file.getId(), ''));
+    if (seen[file.getId()] || OCR_MIME.indexOf(file.getMimeType()) < 0) continue;
+    seen[file.getId()] = true;
+    rows.push(buildDirectRow_(parseInvoiceText(ocrFile_(file.getId())), file));
   }
 
   if (rows.length) {
@@ -116,12 +70,13 @@ function syncDirect_() {
   return rows.length;
 }
 
-function buildDirectRow_(inv, fallbackSupplier, source, fileUrl, fileId, msgId) {
+function buildDirectRow_(inv, file) {
   const spec = parseSpec(inv.items.join(' / '));
+  const name = file.getName();
   return [
     new Date(),
     inv.date,
-    inv.supplier || fallbackSupplier,
+    inv.supplier || name.replace(/\.[^.]+$/, ''),
     inv.invoiceNo,
     inv.items.join('\n'),
     spec.brand,
@@ -133,12 +88,11 @@ function buildDirectRow_(inv, fallbackSupplier, source, fileUrl, fileId, msgId) 
     inv.vat,
     inv.total,
     inv.vatNo,
-    source,
-    fileUrl,
+    name,
+    file.getUrl(),
     '待核对',
     '',
-    fileId,
-    msgId,
+    file.getId(),
   ];
 }
 
@@ -186,7 +140,7 @@ function getDirectSheet_() {
     sheet.getRange(1, DCOL['发票号'], max, 1).setNumberFormat('@');
     sheet.getRange(1, DCOL['净额'], max, 3).setNumberFormat('£#,##0.00');
     sheet.setColumnWidth(DCOL['商品明细(识别)'], 380);
-    sheet.hideColumns(DCOL['文件ID'], 2);
+    sheet.hideColumns(DCOL['文件ID']);
     const rule = SpreadsheetApp.newDataValidation()
       .requireValueInList(['待核对', '已核对', '重复/忽略'], true).setAllowInvalid(true).build();
     sheet.getRange(2, DCOL['核对状态'], max - 1, 1).setDataValidation(rule);
@@ -195,12 +149,11 @@ function getDirectSheet_() {
 }
 
 function indexDirectRows_(sheet) {
-  const seen = { file: {}, msg: {} };
+  const seen = {};
   const n = sheet.getLastRow() - 1;
   if (n >= 1) {
-    sheet.getRange(2, DCOL['文件ID'], n, 2).getValues().forEach(function (r) {
-      if (r[0]) seen.file[r[0]] = true;
-      if (r[1]) seen.msg[r[1]] = true;
+    sheet.getRange(2, DCOL['文件ID'], n, 1).getValues().forEach(function (r) {
+      if (r[0]) seen[r[0]] = true;
     });
   }
   return seen;
@@ -239,35 +192,7 @@ function labelledAmount_(lines, labelRe, skipRe) {
 }
 
 /**
- * Drops quoted history from an email body: everything from the first
- * "On ... wrote:" / "-----Original Message-----" / Outlook "From:" header
- * line, plus any remaining ">"-quoted lines.
- */
-function stripQuoted(body) {
-  const lines = String(body || '').split(/\r?\n/);
-  const out = [];
-  for (let i = 0; i < lines.length; i++) {
-    const l = lines[i];
-    if (/^\s*On\b.*\bwrote:\s*$/i.test(l) ||
-        /^\s*On\b.*[^:]$/i.test(l) && /wrote:\s*$/i.test(lines[i + 1] || '') ||
-        /^\s*-{2,}\s*Original Message/i.test(l) ||
-        /^\s*From:\s.+/i.test(l) && /^\s*(Sent|Date):/i.test(lines[i + 1] || '')) break;
-    if (/^\s*>/.test(l)) continue;
-    out.push(l);
-  }
-  return out.join('\n');
-}
-
-/** "Dominic <x@y.com>" -> "Dominic"; bare address -> its domain name. */
-function senderName(from) {
-  const m = String(from || '').match(/^\s*"?([^"<]+?)"?\s*<([^>]+)>/);
-  if (m) return m[1].trim();
-  const d = String(from || '').match(/@([^.>]+)/);
-  return d ? d[1] : '';
-}
-
-/**
- * Best-effort fields from invoice text (OCR output or an email body).
+ * Best-effort fields from OCR'd invoice text.
  * Anything not found is left '' for the user to fill in.
  */
 function parseInvoiceText(text) {
@@ -320,6 +245,5 @@ function parseInvoiceText(text) {
 }
 
 if (typeof module !== 'undefined') {
-  Object.assign(module.exports, { parseInvoiceText: parseInvoiceText, senderName: senderName,
-    stripQuoted: stripQuoted });
+  Object.assign(module.exports, { parseInvoiceText: parseInvoiceText });
 }
