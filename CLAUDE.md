@@ -15,8 +15,14 @@ This repo holds two independent tools:
   marks rows cancelled/refunded from eBay's notification emails. Deployed by
   pasting `Code.gs` into the sheet's Apps Script editor and running `setup()`
   once; see its README. The parsers are pure functions tested offline with
-  `node test.js` (the `module.exports` guard at the bottom of `Code.gs` is
-  for that and is a no-op in Apps Script).
+  `node test.js` (the `module.exports` guards at the bottom of the `.gs`
+  files are for that and are no-ops in Apps Script). `Direct.gs` in the same
+  Apps Script project adds a "直采记录" tab for direct-supplier invoices
+  (Gmail label 「直采发票」 + Drive folder 「直采发票」), OCR'd for free via a
+  Drive PDF/image -> Google Doc copy and parsed with regex rules; it runs
+  from `dailySync()` so both share one trigger. All `.gs` files share one
+  global scope in Apps Script, so top-level names must stay unique across
+  files (test.js loads them into one vm context the same way).
 
 ## Commands
 

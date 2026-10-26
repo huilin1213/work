@@ -50,6 +50,15 @@ function setup() {
 function dailySync() {
   const added = sync_(CONFIG.DAILY_WINDOW);
   Logger.log('Daily sync: %s new item rows.', added);
+  // Direct-supplier invoices (Direct.gs) share this trigger; a failure there
+  // must not look like an eBay sync failure, so it is logged separately.
+  if (typeof syncDirect_ === 'function') {
+    try {
+      Logger.log('Direct sync: %s new rows.', syncDirect_());
+    } catch (e) {
+      Logger.log('Direct sync failed: %s', e);
+    }
+  }
 }
 
 /**

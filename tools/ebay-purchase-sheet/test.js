@@ -5,8 +5,11 @@ const path = require('path');
 const vm = require('vm');
 
 const ctx = { module: { exports: {} } };
-vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'Code.gs'), 'utf8'), ctx);
-const { parseOrderEmail, parseStatusSubject, parseSpec } = ctx.module.exports;
+vm.createContext(ctx);
+// Apps Script loads every .gs file into one global scope; mimic that.
+['Code.gs', 'Direct.gs'].forEach((f) =>
+  vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx, { filename: f }));
+const { parseOrderEmail, parseStatusSubject, parseSpec, parseInvoiceText, senderName } = ctx.module.exports;
 
 // Trimmed from a real eBay UK "Order confirmed" email (offer accepted, with
 // Buyer Protection fee), with tracking params and the delivery address removed.
@@ -118,5 +121,62 @@ assert.strictEqual(parseSpec('6 x Integral 32GB DDR4 2666MHZ IN4T32GREMSX2').bra
 assert.strictEqual(parseSpec('6 x Integral 32GB DDR4 2666MHZ IN4T32GREMSX2').perListing, 6);
 assert.strictEqual(parseSpec('Micron 32GB 2RX4 PC4-3200AA-RB2-12 Server RAM MTA36ASF4G72PZ X 16').perListing, 16);
 assert.strictEqual(parseSpec('SERVER MEMORY MODULES - 2 x 32GB (total 64GB) pc4 2133mz').perListing, 2);
+
+// --- Direct-supplier invoices (Direct.gs) ---
+// Shaped like Drive OCR output of a typical UK trade invoice (fictional data).
+const ocr = `INVOICE
+Acme IT Recycling Ltd
+Unit 4, Example Park, Leeds LS1 1AA
+VAT Reg No: GB 123 4567 89
+Bill To: Blue Bridgewell LTD
+Invoice No: INV-2041
+Invoice Date: 21/10/2026
+Qty Description Unit Price Amount
+20 Samsung 32GB 2Rx4 PC4-2666V M393A4K40CB2-CTD £40.00 £800.00
+10 SK Hynix 16GB PC4-2133P HMA42GR7AFR4N-TF £25.00 £250.00
+Subtotal £1,050.00
+VAT @ 20% £210.00
+Total £1,260.00
+Company No: 01234567`;
+const inv = parseInvoiceText(ocr);
+assert.strictEqual(inv.supplier, 'Acme IT Recycling Ltd');
+assert.strictEqual(inv.invoiceNo, 'INV-2041');
+assert.strictEqual(inv.date, '21/10/2026');
+assert.strictEqual(inv.vatNo, 'GB123456789');
+assert.strictEqual(inv.net, 1050);
+assert.strictEqual(inv.vat, 210);
+assert.strictEqual(inv.total, 1260);
+assert.strictEqual(inv.items.length, 2);
+assert.ok(inv.items[0].includes('M393A4K40CB2-CTD'));
+
+// Amounts on the line after the label (common when OCR splits table cells),
+// "Total VAT" wording, no VAT number, date written out.
+const ocr2 = `Steve's Server Parts
+Invoice # 5531
+Date: 3 October 2026
+1 Job lot of 50x DDR4 RDIMM 16GB
+Net Total
+900.00
+Total VAT
+180.00
+Amount Due
+1,080.00`;
+const inv2 = parseInvoiceText(ocr2);
+assert.strictEqual(inv2.supplier, '');
+assert.strictEqual(inv2.invoiceNo, '5531');
+assert.strictEqual(inv2.date, '3 October 2026');
+assert.strictEqual(inv2.vatNo, '');
+assert.strictEqual(inv2.net, 900);
+assert.strictEqual(inv2.vat, 180);
+assert.strictEqual(inv2.total, 1080);
+
+// Garbage in -> blanks out, never a throw.
+const empty = parseInvoiceText('');
+assert.strictEqual(empty.total, '');
+assert.strictEqual(empty.items.length, 0);
+
+assert.strictEqual(senderName('Dominic <cwl-uk@hotmail.com>'), 'Dominic');
+assert.strictEqual(senderName('"Jess Singleton" <j@restore.co.uk>'), 'Jess Singleton');
+assert.strictEqual(senderName('sales@theramstore.co.uk'), 'theramstore');
 
 console.log('all parser tests passed');
