@@ -60,6 +60,7 @@ function onOpen() {
     .addItem('只同步直采发票', 'syncDirectNow')
     .addSeparator()
     .addItem('重新排序和上色', 'recolorDirect')
+    .addItem('重新识别全部直采发票', 'rebuildDirect')
     .addToUi();
 }
 
@@ -74,6 +75,17 @@ function setupDirect() {
 
 function syncDirectNow() {
   Logger.log('Direct sync: %s new rows.', syncDirect_());
+}
+
+/**
+ * After the recognition rules improve: keeps the current 直采记录 as a
+ * renamed backup (notes intact) and reads every invoice in Drive again.
+ */
+function rebuildDirect() {
+  const sheet = getDirectSheet_();
+  sheet.setName(DIRECT.SHEET_NAME + '(旧版 ' +
+    Utilities.formatDate(new Date(), CONFIG.TIMEZONE, 'yyyy-MM-dd HH:mm') + ')');
+  syncDirectNow();
 }
 
 /** Re-sort, re-colour and rebuild the summary, e.g. after hand edits. */
@@ -367,7 +379,8 @@ function getDirectSheet_() {
     const max = sheet.getMaxRows();
     sheet.getRange(1, DCOL['发票日期'], max, 1).setNumberFormat('yyyy-mm-dd');
     sheet.getRange(1, DCOL['发票号'], max, 1).setNumberFormat('@');
-    sheet.getRange(1, DCOL['单价'], max, 4).setNumberFormat('£#,##0.00');
+    sheet.getRange(1, DCOL['单价'], max, 1).setNumberFormat('£#,##0.00##');
+    sheet.getRange(1, DCOL['金额'], max, 3).setNumberFormat('£#,##0.00');
     sheet.getRange(1, DCOL['同步时间'], max, 1).setNumberFormat('yyyy-mm-dd hh:mm');
     sheet.setColumnWidth(DCOL['商品描述'], 380);
     sheet.setColumnWidth(DCOL['行号'], 50);
@@ -458,14 +471,16 @@ function amountsIn_(line) {
   return out;
 }
 
-/** Amount on the line matching `labelRe` (last on that line, else first on the next). */
+/** First amount after the label on its line (else first on the next line). */
 function labelledAmount_(lines, labelRe, skipRe) {
   let found = '';
   lines.forEach(function (line, i) {
     if (!labelRe.test(line) || (skipRe && skipRe.test(line))) return;
-    const own = amountsIn_(line);
+    // After the label, not anywhere on the line: OCR can join two labels on
+    // one line ("Total VAT 20% 439.33 Invoice Total GBP 2,636.00").
+    const own = amountsIn_(line.slice(line.search(labelRe)));
     const next = i + 1 < lines.length ? amountsIn_(lines[i + 1]) : [];
-    const v = own.length ? own[own.length - 1] : (next.length ? next[0] : '');
+    const v = own.length ? own[0] : (next.length ? next[0] : '');
     if (v !== '') found = v;  // keep the last one: totals sit at the bottom
   });
   return found;
@@ -514,9 +529,14 @@ function parseInvoiceText(text) {
 }
 
 const MONEY = '£?\\s?(\\d{1,3}(?:,\\d{3})+\\.\\d{2}|\\d+\\.\\d{2})';
-const ROW_RE = new RegExp('^(.*?[A-Za-z].*?)\\s+(\\d{1,5})\\s+' + MONEY + '\\s+' + MONEY + '\\s*$');
+// Unit prices may carry 4 decimals ("41.6667"), quantities ".00", and a VAT
+// rate column ("20%") may sit between unit price and amount.
+const QTY = '(\\d{1,5}(?:\\.\\d{1,2})?)';
+const PRICE = '£?\\s?(\\d{1,3}(?:,\\d{3})+\\.\\d{2,4}|\\d+\\.\\d{2,4})';
+const VAT_RATE = '(?:\\s+\\d{1,2}(?:\\.\\d+)?\\s?%)?';
+const ROW_RE = new RegExp('^(.*?[A-Za-z].*?)\\s+' + QTY + '\\s+' + PRICE + VAT_RATE + '\\s+' + MONEY + '\\s*$');
 // "20 Samsung 32GB ... £40.00 £800.00" (quantity column first).
-const ROW_QTY_FIRST_RE = new RegExp('^(\\d{1,5})\\s+(.*?[A-Za-z].*?)\\s+' + MONEY + '\\s+' + MONEY + '\\s*$');
+const ROW_QTY_FIRST_RE = new RegExp('^' + QTY + '\\s+(.*?[A-Za-z].*?)\\s+' + PRICE + VAT_RATE + '\\s+' + MONEY + '\\s*$');
 const MONEY_ONLY_RE = new RegExp('^' + MONEY + '$');
 const num_ = function (s) { return parseFloat(String(s).replace(/,/g, '')); };
 const near_ = function (a, b) { return Math.abs(a - b) < 0.015; };
@@ -551,8 +571,8 @@ function parseLineItems(text) {
   lines.forEach(function (l) {
     const m = l.match(ROW_RE);
     const q = !m && l.match(ROW_QTY_FIRST_RE);
-    if (m) rows.push({ desc: m[1].trim(), qty: +m[2], price: num_(m[3]), amount: num_(m[4]) });
-    else if (q) rows.push({ desc: q[2].trim(), qty: +q[1], price: num_(q[3]), amount: num_(q[4]) });
+    if (m) rows.push({ desc: cleanDesc_(m[1]), qty: +m[2], price: num_(m[3]), amount: num_(m[4]) });
+    else if (q) rows.push({ desc: cleanDesc_(q[2]), qty: +q[1], price: num_(q[3]), amount: num_(q[4]) });
   });
   if (rows.length) return rows;
 
@@ -579,6 +599,11 @@ function parseLineItems(text) {
   const fits = function (pa) { return pa.every(function (x, i) { return near_(qtys[i] * x.p, x.a); }); };
   const use = fits(pairs) && !fits(blocks) ? pairs : blocks;
   return descs.map(function (d, i) { return { desc: d, qty: qtys[i], price: use[i].p, amount: use[i].a }; });
+}
+
+/** Re-joins part numbers broken at a line wrap: "HMA82GR7JJR8N- VK" -> "HMA82GR7JJR8N-VK". */
+function cleanDesc_(d) {
+  return String(d).replace(/([A-Z0-9])-\s+(?=[A-Z0-9])/g, '$1-').replace(/\s+/g, ' ').trim();
 }
 
 /** Whether the lines add up to the invoice's own subtotal (or total). */

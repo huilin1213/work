@@ -257,6 +257,51 @@ assert.strictEqual(d('3 Oct 2026'), '2026-10-3');
 assert.strictEqual(d('2026-10-03'), '2026-10-3');
 assert.strictEqual(parseInvoiceDate('soon'), 'soon');
 
+// Chaps IT layout (text of a real invoice, bank details left out): qty with
+// ".00", 4-decimal unit price, VAT % column, part numbers broken at wraps,
+// two totals on one line.
+const chaps = `Invoice
+Invoice Date 10 Sep 2026
+Invoice Number IV-582488
+Reference VAT Number
+390293290
+Description Quantity Unit Price VAT Amount GBP
+16GB SK Hynix HMA82GR7AFR8N-VK 16.00 41.6667 20% 666.67
+16GB SK Hynix SK Hynix HMA82GR7AFR4N-VK 1.00 41.6667 20% 41.67
+16GB SKHynix-HMA82GR7JJR8N- VK 2.00 41.6667 20% 83.33
+16GB SK Hynix HMA82GR7CJR8N- VK 3.00 41.6667 20% 125.00
+32GB Samsung M393A4K40BB0- CPB 16.00 80.00 20% 1,280.00
+Subtotal 2,196.67
+Total VAT 20% 439.33 Invoice Total GBP 2,636.00
+Total GBP 2,636.00
+Due Date: 17 Sep 2026`;
+const ci = parseInvoiceText(chaps);
+assert.strictEqual(ci.invoiceNo, 'IV-582488');
+assert.strictEqual(ci.date, '10 Sep 2026');
+assert.strictEqual(ci.net, 2196.67);
+assert.strictEqual(ci.vat, 439.33);
+assert.strictEqual(ci.total, 2636);
+const cl = parseLineItems(chaps);
+assert.strictEqual(cl.length, 5);
+assert.deepStrictEqual(JSON.parse(JSON.stringify(cl[0])),
+  { desc: '16GB SK Hynix HMA82GR7AFR8N-VK', qty: 16, price: 41.6667, amount: 666.67 });
+assert.strictEqual(cl[2].desc, '16GB SKHynix-HMA82GR7JJR8N-VK');
+assert.strictEqual(cl[4].desc, '32GB Samsung M393A4K40BB0-CPB');
+assert.strictEqual(cl[4].qty, 16);
+assert.strictEqual(cl[4].price, 80);
+assert.strictEqual(checkTotals(cl, ci), '✓ 明细合计=发票小计');
+assert.strictEqual(parseSpec(cl[2].desc).partNo, 'HMA82GR7JJR8N-VK');
+assert.strictEqual(parseSpec(cl[4].desc).partNo, 'M393A4K40BB0-CPB');
+
+const wrapped = parseLineItems(`Description Quantity Unit Price VAT Amount GBP
+SK Hynix-HMA84GR7AFR4N-UH DDR 4 Memory 32GB 20.00 72.4917 20% 1,449.83
+SKHynix-HMA84GR7MFR4N-UH DDR4 Memory 32GB 10.00 72.4917 20% 724.92
+Subtotal 2,174.75`);
+assert.strictEqual(wrapped.length, 2);
+assert.strictEqual(wrapped[0].qty, 20);
+assert.strictEqual(parseSpec(wrapped[0].desc).partNo, 'HMA84GR7AFR4N-UH');
+assert.strictEqual(parseSpec(wrapped[1].desc).capacity, '32GB');
+
 // --- 直采汇总 ---
 const sum = summarize([
   { supplier: 'Steve', fileId: 'a', date: new Date(2026, 8, 22), desc: '32gb Hynix', qty: 4, net: 647.5, gross: 777, check: '✓' },
