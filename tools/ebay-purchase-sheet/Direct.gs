@@ -48,6 +48,45 @@ function syncDirectNow() {
   Logger.log('Direct sync: %s new rows.', syncDirect_());
 }
 
+/**
+ * Run by hand: copies every PDF a supplier ever emailed you into
+ * 直采发票/<folder>, then syncs. Safe to re-run: each attachment is tagged
+ * with its Gmail message ID + position and skipped if already saved.
+ * Add a line to EMAIL_IMPORTS for another supplier.
+ */
+const EMAIL_IMPORTS = [
+  { from: 'dom.chappell@chapsitrecycling.co.uk', folder: 'Chaps IT' },
+];
+
+function importEmailInvoices() {
+  const root = getDirectFolder_();
+  EMAIL_IMPORTS.forEach(function (imp) {
+    const sub = root.getFoldersByName(imp.folder);
+    const folder = sub.hasNext() ? sub.next() : root.createFolder(imp.folder);
+    const saved = {};
+    const files = folder.getFiles();
+    while (files.hasNext()) saved[files.next().getDescription()] = true;
+
+    let count = 0;
+    const from = imp.from.toLowerCase();
+    searchMessages_('from:' + imp.from + ' has:attachment').forEach(function (msg) {
+      // Threads also contain our own replies (which quote their attachments).
+      if (msg.getFrom().toLowerCase().indexOf(from) < 0) return;
+      msg.getAttachments({ includeInlineImages: false }).forEach(function (att, i) {
+        if (att.getContentType() !== 'application/pdf') return;
+        const tag = 'gmail:' + msg.getId() + ':' + i;
+        if (saved[tag]) return;
+        const date = Utilities.formatDate(msg.getDate(), CONFIG.TIMEZONE, 'yyyy-MM-dd');
+        folder.createFile(att.copyBlob()).setName(date + ' ' + att.getName()).setDescription(tag);
+        saved[tag] = true;
+        count++;
+      });
+    });
+    Logger.log('%s: saved %s new PDF(s) to 直采发票/%s', imp.from, count, imp.folder);
+  });
+  Logger.log('Direct sync: %s new rows.', syncDirect_());
+}
+
 // ---------------------------------------------------------------------------
 // Sync
 // ---------------------------------------------------------------------------
