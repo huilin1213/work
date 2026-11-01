@@ -68,6 +68,12 @@ Four independent modules, wired together only through `main.py`:
   gridlines, so table extraction is reliable), not text regex. Rows are kept
   only when the first cell is a bare digit, which filters out the repeated
   table header on continuation pages.
+- The Unit Value / Sub Total column divider is sometimes drawn in the wrong
+  place (seen in the MyDHL+ "waybill + invoice" combined download, Oct 2026),
+  so pdfplumber cuts amounts in half across the two cells (`'60.00 GBP 24\nGB'`
+  + `'0.00\nP'`). `_split_unit_and_subtotal()` re-joins the two cells line by
+  line and takes the first amount as unit value and the last as sub total;
+  never parse those two cells independently.
 - After building an invoice, `main.process_one()` sums `LineItem.sub_total`
   and compares it to the PDF's own "Total Invoice Amount" as a sanity check
   (warns, does not abort).

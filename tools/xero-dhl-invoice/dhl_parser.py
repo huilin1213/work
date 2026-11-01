@@ -65,6 +65,31 @@ def _clean_amount(text: str) -> float:
     return float(m.group(0).replace(",", ""))
 
 
+_AMOUNT_RE = re.compile(r"\d[\d,]*\.\d{2}")
+
+
+def _split_unit_and_subtotal(unit_cell: str | None, sub_cell: str | None) -> tuple[float, float]:
+    """从 "Unit Value" 和 "Sub Total" 两格里取出 (单价, 小计)。
+
+    有些 DHL PDF(比如 2026-10 起 MyDHL+ 跟面单合并下载的版本)这两列之间的
+    分隔线画偏了,pdfplumber 会把金额从中间切开,例如:
+        Unit Value 格: '60.00 GBP 24\\nGB'    Sub Total 格: '0.00\\nP'
+    所以不能单独解析每一格,而是把两格逐行拼回去('60.00 GBP 240.00' /
+    'GBP GBP'),再取第一个金额当单价、最后一个当小计。列分得正常的旧版 PDF
+    拼起来也一样能解析。
+    """
+    unit_lines = (unit_cell or "").split("\n")
+    sub_lines = (sub_cell or "").split("\n")
+    n = max(len(unit_lines), len(sub_lines))
+    unit_lines += [""] * (n - len(unit_lines))
+    sub_lines += [""] * (n - len(sub_lines))
+    combined = "\n".join(u + s for u, s in zip(unit_lines, sub_lines))
+    amounts = _AMOUNT_RE.findall(combined)
+    if len(amounts) < 2:
+        raise ValueError(f"无法从 {unit_cell!r} / {sub_cell!r} 中解析出单价和小计")
+    return float(amounts[0].replace(",", "")), float(amounts[-1].replace(",", ""))
+
+
 def _extract_ship_to(first_page) -> ShipToParty:
     """按坐标把 SHIP FROM / SHIP TO 两栏拆开,只取右边(SHIP TO = 收货人/客户)。"""
     words = first_page.extract_words()
@@ -148,6 +173,7 @@ def _extract_line_items(pdf) -> list[LineItem]:
                     continue  # 跳过表头重复行/空行
                 item_no, desc, commodity, _tax_paid, _weight, _coo, _ref, qty, unit_value, sub_total = row
                 qty_m = re.search(r"([\d.]+)\s*(\S+)?", (qty or "").replace("\n", " ").strip())
+                unit_amount, sub_amount = _split_unit_and_subtotal(unit_value, sub_total)
                 line_items.append(
                     LineItem(
                         item_no=item_no.strip(),
@@ -155,8 +181,8 @@ def _extract_line_items(pdf) -> list[LineItem]:
                         commodity_code=(commodity or "").replace("\n", "").strip(),
                         qty=float(qty_m.group(1)) if qty_m else 0.0,
                         unit=(qty_m.group(2) or "").strip() if qty_m else "",
-                        unit_value=_clean_amount(unit_value or ""),
-                        sub_total=_clean_amount(sub_total or ""),
+                        unit_value=unit_amount,
+                        sub_total=sub_amount,
                     )
                 )
     return line_items
