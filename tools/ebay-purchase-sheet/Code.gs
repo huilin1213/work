@@ -3,7 +3,7 @@
  *
  * Reads eBay "Order confirmed" emails from Gmail, appends one row per
  * purchased item to the sheet, and marks rows cancelled/refunded when the
- * matching eBay notification arrives. Runs daily at 09:00 and 20:00 (Europe/London)
+ * matching eBay notification arrives. Runs daily at 06:00, 12:00, 15:00, 18:00 and 21:00 (Europe/London)
  * via a time-driven trigger installed by setup().
  *
  * Install: bind this script to the target spreadsheet (Extensions > Apps
@@ -14,7 +14,7 @@ const CONFIG = {
   SHEET_NAME: 'eBay采购记录',
   TIMEZONE: 'Europe/London',
   // Hours (24h, TIMEZONE) at which dailySync runs every day.
-  TRIGGER_HOURS: [9, 20],
+  TRIGGER_HOURS: [6, 12, 15, 18, 21],
   // setup() backfills everything since this date (Gmail search syntax).
   BACKFILL_SINCE: '2026/07/01',
   // Daily runs re-scan this window; already-recorded orders are skipped, so

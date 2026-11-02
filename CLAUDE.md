@@ -11,7 +11,7 @@ This repo holds two independent tools:
   Accounting API. Everything below refers to that tool unless noted otherwise.
 - `tools/ebay-purchase-sheet/` — a Google Apps Script (`Code.gs`, bound to the
   "eBay 采购记录（自动同步）" spreadsheet) that parses eBay "Order confirmed"
-  Gmail emails into a purchase log sheet daily at 09:00 and 20:00 Europe/London
+  Gmail emails into a purchase log sheet daily at 06:00, 12:00, 15:00, 18:00 and 21:00 Europe/London
   (`CONFIG.TRIGGER_HOURS`; `updateSchedule()` reinstalls the triggers), and
   marks rows cancelled/refunded from eBay's notification emails. Deployed by
   pasting `Code.gs` into the sheet's Apps Script editor and running `setup()`
