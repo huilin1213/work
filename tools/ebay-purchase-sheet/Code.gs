@@ -3,7 +3,7 @@
  *
  * Reads eBay "Order confirmed" emails from Gmail, appends one row per
  * purchased item to the sheet, and marks rows cancelled/refunded when the
- * matching eBay notification arrives. Runs daily at 06:00, 12:00, 15:00, 18:00 and 21:00 (Europe/London)
+ * matching eBay notification arrives. Runs every hour via a time-driven trigger
  * via a time-driven trigger installed by setup().
  *
  * Install: bind this script to the target spreadsheet (Extensions > Apps
@@ -13,8 +13,8 @@
 const CONFIG = {
   SHEET_NAME: 'eBay采购记录',
   TIMEZONE: 'Europe/London',
-  // Hours (24h, TIMEZONE) at which dailySync runs every day.
-  TRIGGER_HOURS: [6, 12, 15, 18, 21],
+  // dailySync runs every N hours (Apps Script allows 1, 2, 4, 6, 8 or 12).
+  SYNC_EVERY_HOURS: 1,
   // setup() backfills everything since this date (Gmail search syntax).
   BACKFILL_SINCE: '2026/07/01',
   // Daily runs re-scan this window; already-recorded orders are skipped, so
@@ -43,14 +43,14 @@ function setup() {
   getSheet_();
   const added = sync_('after:' + CONFIG.BACKFILL_SINCE);
   installTrigger_();
-  Logger.log('Setup done. Backfilled %s item rows. Daily triggers at %s:00 %s.',
-    added, CONFIG.TRIGGER_HOURS.join(':00, '), CONFIG.TIMEZONE);
+  Logger.log('Setup done. Backfilled %s item rows. Syncing every %s hour(s).',
+    added, CONFIG.SYNC_EVERY_HOURS);
 }
 
-/** Run by hand after changing CONFIG.TRIGGER_HOURS: reinstalls the schedule only. */
+/** Run by hand after changing CONFIG.SYNC_EVERY_HOURS: reinstalls the schedule only. */
 function updateSchedule() {
   installTrigger_();
-  Logger.log('Daily triggers now at %s:00 %s.', CONFIG.TRIGGER_HOURS.join(':00, '), CONFIG.TIMEZONE);
+  Logger.log('Now syncing every %s hour(s).', CONFIG.SYNC_EVERY_HOURS);
 }
 
 /** Called by the daily trigger. */
@@ -235,11 +235,8 @@ function installTrigger_() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (t.getHandlerFunction() === 'dailySync') ScriptApp.deleteTrigger(t);
   });
-  CONFIG.TRIGGER_HOURS.forEach(function (hour) {
-    ScriptApp.newTrigger('dailySync').timeBased()
-      .atHour(hour).nearMinute(0).everyDays(1)
-      .inTimezone(CONFIG.TIMEZONE).create();
-  });
+  ScriptApp.newTrigger('dailySync').timeBased()
+    .everyHours(CONFIG.SYNC_EVERY_HOURS).create();
 }
 
 // ---------------------------------------------------------------------------
