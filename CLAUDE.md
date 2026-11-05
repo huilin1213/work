@@ -13,7 +13,10 @@ This repo holds two independent tools:
   "eBay 采购记录（自动同步）" spreadsheet) that parses eBay "Order confirmed"
   Gmail emails into a purchase log sheet every hour
   (`CONFIG.SYNC_EVERY_HOURS`; `updateSchedule()` reinstalls the trigger), and
-  marks rows cancelled/refunded from eBay's notification emails. Deployed by
+  fills a Tracking号 column from eBay dispatch emails ("Tracking number: ...",
+  matched by order number + item ID; Item ID itself is kept as the last,
+  hidden column because it is half of the dedup key), and marks rows
+  cancelled/refunded from eBay's notification emails. Deployed by
   pasting `Code.gs` into the sheet's Apps Script editor and running `setup()`
   once; see its README. The parsers are pure functions tested offline with
   `node test.js` (the `module.exports` guards at the bottom of the `.gs`

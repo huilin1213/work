@@ -2,9 +2,10 @@
  * eBay purchase log -> Google Sheet.
  *
  * Reads eBay "Order confirmed" emails from Gmail, appends one row per
- * purchased item to the sheet, and marks rows cancelled/refunded when the
- * matching eBay notification arrives. Runs every hour via a time-driven trigger
- * via a time-driven trigger installed by setup().
+ * purchased item to the sheet, fills in the tracking number from eBay's
+ * dispatch emails, and marks rows cancelled/refunded when the matching eBay
+ * notification arrives. Runs every hour via a time-driven trigger installed
+ * by setup().
  *
  * Install: bind this script to the target spreadsheet (Extensions > Apps
  * Script), paste this file, then run setup() once and grant permissions.
@@ -23,16 +24,18 @@ const CONFIG = {
   SENDERS: 'from:(ebay@ebay.com OR ebay@ebay.co.uk)',
 };
 
+// Item ID stays as the last, hidden column: it is half of the dedup key and
+// what eBay cancellation emails name, but not something to read.
 const HEADERS = [
-  '下单时间', '订单号', 'Item ID', '商品标题', '品牌', '单条容量', '频率',
+  '下单时间', '订单号', 'Tracking号', '商品标题', '品牌', '单条容量', '频率',
   '料号', '每件条数(估)', '购买数量', '卖家', '单价', '其中买家保护费',
   '运费(整单)', '实付总额(整单)', '状态', '预计送达', 'eBay订单链接',
-  'Gmail邮件', '备注(手填)',
+  'Gmail邮件', '备注(手填)', 'Item ID',
 ];
 const COL = {};
 HEADERS.forEach(function (h, i) { COL[h] = i + 1; });
 
-const STATUS = { ORDERED: '已下单', CANCELLED: '已取消', REFUNDED: '已退款' };
+const STATUS = { ORDERED: '已下单', SHIPPED: '已发货', CANCELLED: '已取消', REFUNDED: '已退款' };
 
 // ---------------------------------------------------------------------------
 // Entry points
@@ -42,6 +45,7 @@ const STATUS = { ORDERED: '已下单', CANCELLED: '已取消', REFUNDED: '已退
 function setup() {
   getSheet_();
   const added = sync_('after:' + CONFIG.BACKFILL_SINCE);
+  applyTracking_(getSheet_(), 'after:' + CONFIG.BACKFILL_SINCE);
   installTrigger_();
   Logger.log('Setup done. Backfilled %s item rows. Syncing every %s hour(s).',
     added, CONFIG.SYNC_EVERY_HOURS);
@@ -51,6 +55,11 @@ function setup() {
 function updateSchedule() {
   installTrigger_();
   Logger.log('Now syncing every %s hour(s).', CONFIG.SYNC_EVERY_HOURS);
+}
+
+/** Run by hand once: fills the Tracking号 column for every existing order. */
+function backfillTracking() {
+  Logger.log('Tracking filled for %s rows.', applyTracking_(getSheet_(), 'after:' + CONFIG.BACKFILL_SINCE));
 }
 
 /** Called by the daily trigger. */
@@ -117,6 +126,8 @@ function sync_(window) {
   }
 
   applyStatusUpdates_(sheet, window);
+  // Sellers often dispatch a week or more after the order.
+  applyTracking_(sheet, 'newer_than:30d');
 
   if (sheet.getLastRow() > 2) {
     sheet.getRange(2, 1, sheet.getLastRow() - 1, HEADERS.length)
@@ -130,7 +141,7 @@ function buildRow_(msg, parsed, item) {
   return [
     msg.getDate(),
     item.orderNo,
-    item.itemId,
+    '',
     item.title,
     spec.brand,
     spec.capacity,
@@ -148,7 +159,45 @@ function buildRow_(msg, parsed, item) {
     item.orderNo ? 'https://order.ebay.co.uk/ord/show?orderid=' + item.orderNo : '',
     'https://mail.google.com/mail/u/0/#all/' + msg.getId(),
     '',
+    item.itemId,
   ];
+}
+
+/**
+ * Fills Tracking号 from eBay dispatch emails ("Tracking number: ..."), matched
+ * by order number + item ID. Only empty cells are filled; a row still at
+ * 已下单 moves to 已发货. Returns the number of rows filled.
+ */
+function applyTracking_(sheet, window) {
+  const n = sheet.getLastRow() - 1;
+  if (n < 1) return 0;
+  const found = {};
+  searchMessages_(CONFIG.SENDERS + ' "Tracking number" ' + window).forEach(function (msg) {
+    const t = parseTrackingEmail(msg.getBody());
+    if (!t.tracking || !t.orderNo) return;
+    found[t.orderNo + '|' + t.itemId] = t.tracking;
+    found[t.orderNo + '|'] = found[t.orderNo + '|'] || t.tracking;
+  });
+  if (!Object.keys(found).length) return 0;
+
+  const data = sheet.getRange(2, 1, n, HEADERS.length).getValues();
+  const tracking = data.map(function (r) { return [r[COL['Tracking号'] - 1]]; });
+  const status = data.map(function (r) { return [r[COL['状态'] - 1]]; });
+  let filled = 0;
+  data.forEach(function (r, i) {
+    if (tracking[i][0]) return;
+    const orderNo = String(r[COL['订单号'] - 1]);
+    const t = found[orderNo + '|' + String(r[COL['Item ID'] - 1])] || found[orderNo + '|'];
+    if (!t) return;
+    tracking[i][0] = t;
+    if (status[i][0] === STATUS.ORDERED) status[i][0] = STATUS.SHIPPED;
+    filled++;
+  });
+  if (filled) {
+    sheet.getRange(2, COL['Tracking号'], n, 1).setValues(tracking);
+    sheet.getRange(2, COL['状态'], n, 1).setValues(status);
+  }
+  return filled;
 }
 
 /** Marks rows cancelled / refunded from eBay's notification emails. */
@@ -192,6 +241,7 @@ function getSheet_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sheet = ss.getSheetByName(CONFIG.SHEET_NAME);
   if (!sheet) sheet = ss.insertSheet(CONFIG.SHEET_NAME, 0);
+  migrateItemIdColumn_(sheet);
   if (sheet.getLastRow() === 0) {
     sheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS])
       .setFontWeight('bold').setBackground('#d9e2f3');
@@ -199,6 +249,8 @@ function getSheet_() {
     sheet.getRange('A:A').setNumberFormat('yyyy-mm-dd hh:mm');
     sheet.getRange(1, COL['单价'], sheet.getMaxRows(), 4).setNumberFormat('£#,##0.00');
     sheet.getRange(1, COL['订单号'], sheet.getMaxRows(), 2).setNumberFormat('@');
+    sheet.getRange(1, COL['Item ID'], sheet.getMaxRows(), 1).setNumberFormat('@');
+    sheet.hideColumns(COL['Item ID']);
     sheet.setColumnWidth(COL['商品标题'], 380);
     const rule = SpreadsheetApp.newDataValidation()
       .requireValueInList(['已下单', '已发货', '已收到/已检查', '有瑕疵', '已取消', '已退款'], true)
@@ -208,13 +260,28 @@ function getSheet_() {
   return sheet;
 }
 
+/**
+ * Sheets made before Tracking号 existed have Item ID as column 3: move it to
+ * the end (hidden) and put an empty Tracking号 column in its place. Rows and
+ * hand-typed cells move with their columns.
+ */
+function migrateItemIdColumn_(sheet) {
+  if (sheet.getLastRow() === 0 || sheet.getRange(1, 3).getValue() !== 'Item ID') return;
+  // Old layout had 20 columns; Item ID lands at column 21 = COL['Item ID'].
+  sheet.moveColumns(sheet.getRange(1, 3, 1, 1), HEADERS.length);
+  sheet.insertColumnBefore(3);
+  sheet.getRange(1, 3).setValue('Tracking号');
+  sheet.getRange(1, 3, sheet.getMaxRows(), 1).setNumberFormat('@');
+  sheet.hideColumns(COL['Item ID']);
+}
+
 function indexRows_(sheet) {
   const byKey = {};
-  const lastRow = sheet.getLastRow();
-  if (lastRow >= 2) {
-    sheet.getRange(2, COL['订单号'], lastRow - 1, 2).getValues().forEach(function (r) {
-      byKey[String(r[0]) + '|' + String(r[1])] = true;
-    });
+  const n = sheet.getLastRow() - 1;
+  if (n >= 1) {
+    const orders = sheet.getRange(2, COL['订单号'], n, 1).getValues();
+    const items = sheet.getRange(2, COL['Item ID'], n, 1).getValues();
+    orders.forEach(function (r, i) { byKey[String(r[0]) + '|' + String(items[i][0])] = true; });
   }
   return { byKey: byKey };
 }
@@ -338,6 +405,17 @@ function parseOrderEmail(body) {
   };
 }
 
+/** {tracking, orderNo, itemId} from an eBay dispatch email (HTML or text). */
+function parseTrackingEmail(body) {
+  const text = /<[a-z][\s\S]*>/i.test(body) ? htmlToText(body) : String(body || '');
+  const pick = function (re) { return (text.match(re) || [])[1] || ''; };
+  return {
+    tracking: pick(/Tracking number:?\s*\[?\s*([A-Z0-9]{8,30})\b/i).toUpperCase(),
+    orderNo: pick(/Order number:\s*([\d-]{8,})/i),
+    itemId: pick(/Item ID:\s*(\d{6,})/i),
+  };
+}
+
 /** Status change from a cancellation / refund email subject, or null. */
 function parseStatusSubject(subject) {
   let m = subject.match(/Refund issued for order ([\d-]{8,})/i);
@@ -402,5 +480,6 @@ function parseSpec(title) {
 
 if (typeof module !== 'undefined') {
   module.exports = { parseOrderEmail: parseOrderEmail, parseStatusSubject: parseStatusSubject,
+    parseTrackingEmail: parseTrackingEmail,
     parseSpec: parseSpec, htmlToText: htmlToText, findTitle: findTitle };
 }

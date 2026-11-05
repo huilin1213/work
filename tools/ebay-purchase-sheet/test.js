@@ -9,7 +9,7 @@ vm.createContext(ctx);
 // Apps Script loads every .gs file into one global scope; mimic that.
 ['Code.gs', 'Direct.gs'].forEach((f) =>
   vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx, { filename: f }));
-const { parseOrderEmail, parseStatusSubject, parseSpec, parseInvoiceText, parseLineItems, checkTotals, parseInvoiceDate, countUnits } = ctx.module.exports;
+const { parseOrderEmail, parseStatusSubject, parseTrackingEmail, parseSpec, parseInvoiceText, parseLineItems, checkTotals, parseInvoiceDate, countUnits } = ctx.module.exports;
 
 // Trimmed from a real eBay UK "Order confirmed" email (offer accepted, with
 // Buyer Protection fee), with tracking params and the delivery address removed.
@@ -121,6 +121,24 @@ assert.strictEqual(parseSpec('6 x Integral 32GB DDR4 2666MHZ IN4T32GREMSX2').bra
 assert.strictEqual(parseSpec('6 x Integral 32GB DDR4 2666MHZ IN4T32GREMSX2').perListing, 6);
 assert.strictEqual(parseSpec('Micron 32GB 2RX4 PC4-3200AA-RB2-12 Server RAM MTA36ASF4G72PZ X 16').perListing, 16);
 assert.strictEqual(parseSpec('SERVER MEMORY MODULES - 2 x 32GB (total 64GB) pc4 2133mz').perListing, 2);
+
+// eBay dispatch email (shape of a real one, plain-text rendering and HTML).
+const dispatchText = `# Hi Huilin, your order is being dispatched.
+
+Tracking number: [ VU825382191GB](https://www.ebay.co.uk/vod/FetchOrderDetails?itemId=287665881761)
+
+| #### Item ID: 287665881761 | 287665881761 |
+| #### Order number: 08-15332-47900 | 08-15332-47900 |
+| #### Seller: weeecharity |`;
+assert.deepStrictEqual(JSON.parse(JSON.stringify(parseTrackingEmail(dispatchText))),
+  { tracking: 'VU825382191GB', orderNo: '08-15332-47900', itemId: '287665881761' });
+const dispatchHtml = '<h1>Your order is being dispatched.</h1><p>Tracking number: <a href="https://x/y">' +
+  ' VU825382191GB</a></p><table><tr><td><h4>Item ID: 287665881761</h4></td></tr>' +
+  '<tr><td><h4>Order number: 08-15332-47900</h4></td></tr></table>';
+assert.strictEqual(parseTrackingEmail(dispatchHtml).tracking, 'VU825382191GB');
+assert.strictEqual(parseTrackingEmail(dispatchHtml).orderNo, '08-15332-47900');
+// "Being packed" update without a tracking number.
+assert.strictEqual(parseTrackingEmail('Your order is being packed. Order number: 24-15317-45364').tracking, '');
 
 // --- Direct-supplier invoices (Direct.gs) ---
 // Shaped like Drive OCR output of a typical UK trade invoice (fictional data).
