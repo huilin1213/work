@@ -1,4 +1,8 @@
-"""SQLite 本地记录:见过哪些链接、上次的价格/库存、哪些从搜索结果里消失了。"""
+"""SQLite 本地记录:见过哪些链接、上次的价格/库存、哪些从搜索结果里消失了。
+
+刻意不保存任何 eBay 用户数据(卖家用户名/评价等只在推送里显示,不落库),
+这样在 eBay 开发者后台可以如实选择 Marketplace Account Deletion 的豁免(opt out)。
+"""
 from __future__ import annotations
 
 import sqlite3
@@ -11,8 +15,6 @@ CREATE TABLE IF NOT EXISTS items (
     legacy_id      TEXT,
     title          TEXT,
     url            TEXT,
-    seller         TEXT,
-    seller_fb      TEXT,
     price          REAL,
     currency       TEXT,
     buying_options TEXT,
@@ -64,9 +66,9 @@ class Store:
     def insert(self, it: dict) -> None:
         now = time.time()
         self.db.execute(
-            """INSERT INTO items(item_id, legacy_id, title, url, seller, seller_fb, price,
+            """INSERT INTO items(item_id, legacy_id, title, url, price,
                    currency, buying_options, condition, location, created_at, first_seen, last_seen)
-               VALUES (:item_id, :legacy_id, :title, :url, :seller, :seller_fb, :price,
+               VALUES (:item_id, :legacy_id, :title, :url, :price,
                    :currency, :buying_options, :condition, :location, :created_at, :now, :now)""",
             {**it, "now": now},
         )

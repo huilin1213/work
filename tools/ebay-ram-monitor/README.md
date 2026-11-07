@@ -25,6 +25,9 @@ cp .env.example .env      # 填 EBAY_CLIENT_ID / EBAY_CLIENT_SECRET 和推送渠
 `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` 在 developer.ebay.com → Application Keys →
 **Production** 那一栏(App ID / Cert ID)。
 
+Production 密钥要先处理 Marketplace Account Deletion 通知才能启用。本工具**不保存任何
+eBay 用户数据**(卖家信息只出现在推送里,不写进数据库),所以可以选择豁免(opt out)。
+
 推送二选一(或都配):
 - **ntfy**(最简单):手机装 ntfy App,订阅一个别人猜不到的 topic 名(如 `ram-bbw-8f3k2x`),
   把同样的名字填进 `NTFY_TOPIC`。
