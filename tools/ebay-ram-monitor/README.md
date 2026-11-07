@@ -70,5 +70,14 @@ python3 monitor.py                 # 4. 常驻运行
 
 ## 部署成后台常驻(macOS)
 
-跟 `xero-dhl-invoice/watch_folder.py` 一样,可以做成 LaunchAgent,用 `python3 -u monitor.py`,
-stdout/stderr 重定向到仓库外的日志文件。电脑睡眠会漏单,建议放在常开的机器或云服务器上。
+```bash
+bash launchagent.sh install     # 装成 LaunchAgent:登录自动运行、出错 60 秒后自动重启
+bash launchagent.sh status      # 是否在运行 + 最近日志
+bash launchagent.sh log         # 实时看日志(~/Library/Logs/ebay-ram-monitor.log)
+bash launchagent.sh restart     # 改了 .env 或 git pull 之后
+bash launchagent.sh uninstall
+```
+
+用 `caffeinate -i` 包着运行,服务在跑时 Mac 不会自动睡眠(合盖仍会睡)。
+项目不要放在 桌面/文稿/下载 里,macOS 隐私保护会挡住后台服务读取。
+安装前先停掉终端里手动运行的那个,两个同时跑会重复推送、共用 API 配额。
