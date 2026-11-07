@@ -14,3 +14,7 @@ tools/xero-dhl-invoice/samples/
 
 # 系统杂项
 .DS_Store
+
+# eBay 内存监控的本地凭证和数据库
+tools/ebay-ram-monitor/.env
+tools/ebay-ram-monitor/*.db

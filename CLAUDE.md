@@ -4,10 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository contents
 
-This repo currently holds a single tool: `tools/xero-dhl-invoice/` — parses DHL
+Two independent tools:
+
+- `tools/xero-dhl-invoice/` — parses DHL
 Commercial Invoice PDFs (generated per shipment) and creates matching **Draft**
 sales invoices in Xero via the Accounting API. Everything below refers to that
 tool unless noted otherwise.
+- `tools/ebay-ram-monitor/` — polls the eBay Browse API (app token, no
+  buyer auth, never places orders) for DDR4 server RAM listings and pushes
+  new / restocked / reappeared / price-dropped listings to ntfy or Telegram.
+  See the "eBay RAM monitor" section at the end.
 
 ## Commands
 
@@ -118,3 +124,26 @@ days of inactivity.
 Xero client ID and OAuth tokens respectively and must never be committed —
 both are gitignored at the repo root, along with `*.pdf` since DHL invoices
 contain customer PII.
+
+## eBay RAM monitor (`tools/ebay-ram-monitor/`)
+
+```bash
+python3 monitor.py --test-notify   # check push channel
+python3 monitor.py --once          # one search, print newest 20
+python3 monitor.py                 # daemon; first run silently baselines all results
+python3 find_category.py "<q>"     # Taxonomy API category suggestions
+```
+
+- `ebay_client.py` (token + token-bucket `RateLimiter` sized from
+  `EBAY_DAILY_CALL_BUDGET`; every API call goes through it), `store.py`
+  (SQLite `ebay_monitor.db`, gitignored), `notifier.py`, `monitor.py`
+  (scheduler + detection logic).
+- Three interleaved tasks: fast poll (`sort=newlyListed`, page 1 of 200),
+  full sweep one page per loop iteration (Browse API caps offset+limit at
+  10000), and `getItems` stock rechecks (20 ids/call) using leftover budget.
+- An item is only marked missing after 2 consecutive *complete* sweeps
+  (pagination shifts during a sweep can skip an item once); `getItems`
+  omitting an item does NOT mark it missing, to avoid false "reappeared"
+  alerts. Restock = (available + sold) increased, or OUT_OF_STOCK -> in stock.
+- No test suite; validated by a fake-client simulation driving
+  `Monitor.bootstrap/fast_poll/sweep_step/stock_check`.
