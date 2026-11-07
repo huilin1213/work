@@ -142,7 +142,7 @@ class Monitor:
         self.last_fast = 0.0
         self.last_sweep_end = time.time()
         self.sweep: SweepState | None = None
-        self.last_pages_per_sweep = 0
+        self.last_pages_per_sweep = int(store.get_meta("pages_per_sweep") or 0)
         self.last_status = time.time()
         self.batch_ok = True  # 先试批量 getItems,403 就自动改成逐个 getItem
 
@@ -254,6 +254,7 @@ class Monitor:
         if s.complete:
             self.store.after_complete_sweep(s.started)
         self.last_pages_per_sweep = s.total_pages
+        self.store.set_meta("pages_per_sweep", str(s.total_pages))
         self.last_sweep_end = time.time()
         self.sweep = None
         total, active = self.store.counts()
