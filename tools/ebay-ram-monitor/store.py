@@ -115,7 +115,7 @@ class Store:
                       OR (multi=0 AND last_checked < ?))
                ORDER BY last_checked IS NOT NULL, multi DESC, last_checked
                LIMIT ?""",
-            (now - multi_every, now - single_every, limit),
+            (now - multi_every, now - single_every if single_every != float("inf") else 0, limit),
         ).fetchall()
 
     def counts(self) -> tuple[int, int]:

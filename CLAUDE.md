@@ -145,5 +145,9 @@ python3 find_category.py "<q>"     # Taxonomy API category suggestions
   (pagination shifts during a sweep can skip an item once); `getItems`
   omitting an item does NOT mark it missing, to avoid false "reappeared"
   alerts. Restock = (available + sold) increased, or OUT_OF_STOCK -> in stock.
+- Batch `getItems` is a limited-release method: a normal production keyset
+  gets 403 (errorId 1100). `Monitor.stock_check()` then permanently falls back
+  to single `getItem` calls, checks each single-quantity listing only once,
+  and spends the stock budget on multi-quantity listings.
 - No test suite; validated by a fake-client simulation driving
   `Monitor.bootstrap/fast_poll/sweep_step/stock_check`.

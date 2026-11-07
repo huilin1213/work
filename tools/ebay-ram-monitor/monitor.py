@@ -28,7 +28,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from ebay_client import MAX_GET_ITEMS, MAX_PAGE_SIZE, MAX_RESULT_WINDOW, EbayClient
+from ebay_client import MAX_GET_ITEMS, MAX_PAGE_SIZE, MAX_RESULT_WINDOW, EbayAPIError, EbayClient
 from notifier import Notifier
 from store import Store
 
@@ -144,6 +144,7 @@ class Monitor:
         self.sweep: SweepState | None = None
         self.last_pages_per_sweep = 0
         self.last_status = time.time()
+        self.batch_ok = True  # 先试批量 getItems,403 就自动改成逐个 getItem
 
     # ---------- 工具 ----------
     def excluded(self, title: str) -> bool:
@@ -261,14 +262,34 @@ class Monitor:
     # ---------- 任务 3:库存复查 ----------
     def stock_check(self) -> bool:
         every = self.cfg.watch_minutes * 60
-        rows = self.store.due_for_stock_check(every, every * 4, MAX_GET_ITEMS)
+        if self.batch_ok:
+            rows = self.store.due_for_stock_check(every, every * 4, MAX_GET_ITEMS)
+        else:
+            # 只能逐个查时配额很紧:单件链接查过一次就不再复查(它们卖完会从搜索里消失,
+            # 补货后重新出现,由全量扫描负责),配额集中给多数量链接
+            rows = self.store.due_for_stock_check(every, float("inf"), 1)
         if not rows:
             return False
-        results = {r["itemId"]: r for r in self.client.get_items([row["item_id"] for row in rows])}
+
+        if self.batch_ok:
+            try:
+                fetched = self.client.get_items([row["item_id"] for row in rows])
+            except EbayAPIError as exc:
+                if exc.status != 403:
+                    raise
+                self.batch_ok = False
+                print("ℹ️  这个密钥没有批量查询(getItems)权限,改为逐个查询库存。"
+                      "单件链接只查一次,配额集中给多数量链接。", flush=True)
+                return True
+            results = {r["itemId"]: r for r in fetched}
+        else:
+            raw = self.client.get_item(rows[0]["item_id"])
+            results = {rows[0]["item_id"]: raw} if raw else {}
+
         for row in rows:
             raw = results.get(row["item_id"])
             if raw is None:
-                # 查不到多半是已结束/卖完,但也可能是 getItems 不支持某些链接(比如多规格)。
+                # 查不到多半是已结束/卖完,但也可能是接口不支持某些链接(比如多规格)。
                 # 这里不判定下架(否则误报「重新上架」),交给全量扫描判断,只是降低复查频率。
                 self.store.update_stock(row["item_id"], multi=0)
                 continue
@@ -331,8 +352,7 @@ class Monitor:
         sweep = self.last_pages_per_sweep * (1440 / self.cfg.sweep_minutes)
         left = self.cfg.budget - fast - sweep
         print(f"📊 每日配额估算(上限 {self.cfg.budget}):快速轮询 ≈{fast:.0f},"
-              f"全量扫描 ≈{sweep:.0f}({self.last_pages_per_sweep} 页/次),剩余给库存复查 ≈{max(left, 0):.0f}"
-              f"(≈{max(left, 0) * MAX_GET_ITEMS:.0f} 条次)")
+              f"全量扫描 ≈{sweep:.0f}({self.last_pages_per_sweep} 页/次),剩余给库存复查 ≈{max(left, 0):.0f}")
         if left < 0:
             print("⚠️  配额不够:请调大 FAST_POLL_SECONDS / SWEEP_MINUTES,加价格/类目过滤,"
                   "或去 eBay 开发者后台申请 Growth Check 提额。实际运行会被限速器自动放慢。")

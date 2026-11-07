@@ -9,6 +9,7 @@ import base64
 import time
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote
 
 import requests
 
@@ -22,6 +23,12 @@ SCOPE = "https://api.ebay.com/oauth/api_scope"
 MAX_RESULT_WINDOW = 10000
 MAX_PAGE_SIZE = 200
 MAX_GET_ITEMS = 20
+
+
+class EbayAPIError(RuntimeError):
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class RateLimiter:
@@ -137,7 +144,7 @@ class EbayClient:
                 time.sleep(backoff)
                 backoff *= 2
                 continue
-            raise RuntimeError(f"eBay API {path} 返回 {resp.status_code}: {resp.text[:500]}")
+            raise EbayAPIError(resp.status_code, f"eBay API {path} 返回 {resp.status_code}: {resp.text[:500]}")
         raise RuntimeError(f"eBay API {path} 多次重试仍失败")
 
     # ---------- Browse API ----------
@@ -158,11 +165,21 @@ class EbayClient:
         return self.get("/buy/browse/v1/item_summary/search", params)
 
     def get_items(self, item_ids: list[str]) -> list[dict]:
-        """一次最多 20 个,返回带库存信息(estimatedAvailabilities)的商品详情。"""
+        """批量查(一次最多 20 个)。getItems 是 eBay 的受限接口,普通密钥会返回 403,
+        调用方遇到 403 应改用 get_item 逐个查。"""
         if not item_ids:
             return []
         body = self.get("/buy/browse/v1/item/", {"item_ids": ",".join(item_ids[:MAX_GET_ITEMS])})
         return body.get("items") or []
+
+    def get_item(self, item_id: str) -> dict | None:
+        """查单个商品(带库存 estimatedAvailabilities)。已结束/不存在返回 None。"""
+        try:
+            return self.get(f"/buy/browse/v1/item/{quote(item_id, safe='')}")
+        except EbayAPIError as exc:
+            if exc.status == 404:
+                return None
+            raise
 
     # ---------- Taxonomy API(查类目 ID 用) ----------
     def category_suggestions(self, q: str) -> list[dict]:
