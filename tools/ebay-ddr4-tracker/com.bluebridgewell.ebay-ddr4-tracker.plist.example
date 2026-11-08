@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS 定时任务模板:每天 23:00 运行一次 tracker.py。
+  使用方法见 README.md「每天 23:00 自动运行」。把下面两处 /Users/YOU/... 换成你的真实路径。
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.bluebridgewell.ebay-ddr4-tracker</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>-u</string>
+        <string>/Users/YOU/work/tools/ebay-ddr4-tracker/tracker.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/YOU/work/tools/ebay-ddr4-tracker</string>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>23</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/YOU/Library/Logs/ebay-ddr4-tracker.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/YOU/Library/Logs/ebay-ddr4-tracker.err.log</string>
+</dict>
+</plist>

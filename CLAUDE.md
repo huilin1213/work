@@ -4,10 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository contents
 
-This repo currently holds a single tool: `tools/xero-dhl-invoice/` — parses DHL
-Commercial Invoice PDFs (generated per shipment) and creates matching **Draft**
-sales invoices in Xero via the Accounting API. Everything below refers to that
-tool unless noted otherwise.
+This repo holds two independent tools:
+
+- `tools/xero-dhl-invoice/` — parses DHL Commercial Invoice PDFs (generated
+  per shipment) and creates matching **Draft** sales invoices in Xero via the
+  Accounting API. Everything below refers to this tool unless noted otherwise.
+- `tools/ebay-ddr4-tracker/` — nightly (23:00) eBay DDR4 RAM sales tracker;
+  see the "eBay DDR4 tracker" section at the end.
 
 ## Commands
 
@@ -118,3 +121,25 @@ days of inactivity.
 Xero client ID and OAuth tokens respectively and must never be committed —
 both are gitignored at the repo root, along with `*.pdf` since DHL invoices
 contain customer PII.
+
+## eBay DDR4 tracker (`tools/ebay-ddr4-tracker/`)
+
+```bash
+python3 tracker.py --dry-run   # search only, prints listing count; no DB writes
+python3 tracker.py             # snapshot + daily report (what the LaunchAgent runs at 23:00)
+```
+
+- eBay exposes no sold-history API to ordinary developers (Finding API is
+  gone; Marketplace Insights is restricted), so this uses the **Browse API**
+  (client-credentials app token, `ebay_api.py`) and diffs each listing's
+  cumulative `estimatedSoldQuantity` between consecutive snapshots stored in
+  `data/snapshots.sqlite3`. First run = baseline only, no report.
+- Browse search caps at 10,000 results per query; `search_all()` recursively
+  halves the price range until each band is under the cap.
+- Items from the previous snapshot that drop out of search (usually sold out)
+  are still re-fetched via `get_items()` so their last sale is counted.
+- Titles must match DDR4/PC4 (`DDR4_RE`) to filter keyword false positives.
+- `.env`, `data/`, `reports/` are gitignored. Never scrape ebay.co.uk pages
+  instead of the API — eBay blocks it and it's against their terms.
+- Validate offline with a fake client (no test suite); live calls need the
+  user's eBay Production keys.

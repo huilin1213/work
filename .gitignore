@@ -14,3 +14,8 @@ tools/xero-dhl-invoice/samples/
 
 # 系统杂项
 .DS_Store
+
+# eBay DDR4 销量追踪:API 凭证和抓下来的数据/报表只留在本机
+tools/ebay-ddr4-tracker/.env
+tools/ebay-ddr4-tracker/data/
+tools/ebay-ddr4-tracker/reports/
