@@ -143,6 +143,12 @@ class Store:
         return row["total"] or 0, row["active"] or 0
 
     # ---------- events ----------
+    def event_counts_since(self, ts: float) -> dict[str, int]:
+        rows = self.db.execute(
+            "SELECT kind, COUNT(*) AS n FROM events WHERE ts >= ? GROUP BY kind", (ts,)
+        ).fetchall()
+        return {r["kind"]: r["n"] for r in rows}
+
     def log_event(self, item_id: str, kind: str, detail: str = "") -> None:
         self.db.execute(
             "INSERT INTO events(ts, item_id, kind, detail) VALUES (?, ?, ?, ?)",

@@ -165,5 +165,10 @@ python3 check_item.py <id|url>      # why was/wasn't this listing alerted (1 API
   the seller list never triggers a re-baseline. Seller usernames are never
   persisted (Marketplace Account Deletion opt-out); already-stored items from
   an excluded seller are `retire()`d when a stock check sees the seller.
+- Daily summary push at `DAILY_SUMMARY_TIME` (local HH:MM, default 21:00,
+  sent once per day via `meta` key `last_summary`, so a Mac asleep at that
+  time sends it on wake the same day). Counts come from the `events` table;
+  alerts suppressed by EXCLUDE_KEYWORDS/EXCLUDE_SELLERS are logged as
+  `<KIND>_SKIP` so they don't count as pushes.
 - No test suite; validated by a fake-client simulation driving
   `Monitor.baseline/fast_poll/sweep_step/stock_check`.

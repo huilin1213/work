@@ -51,6 +51,7 @@ class Config:
     sweep_minutes: int
     watch_minutes: int
     price_drop_pct: float
+    summary_time: str = ""   # 每日汇总推送时间 HH:MM(本机时间),空 = 不发
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -91,6 +92,7 @@ class Config:
             sweep_minutes=int(num("SWEEP_MINUTES", "60")),
             watch_minutes=int(num("WATCH_RECHECK_MINUTES", "30")),
             price_drop_pct=float(num("PRICE_DROP_ALERT_PCT", "5")),
+            summary_time=num("DAILY_SUMMARY_TIME", "21:00"),
         )
 
     @property
@@ -165,6 +167,10 @@ class Monitor:
         self.sweep: SweepState | None = None
         self.last_pages_per_sweep = int(store.get_meta("pages_per_sweep") or 0)
         self.last_status = time.time()
+        self.errors_today = 0
+        self.errors_day = datetime.now().date()
+        self.started_at = time.time()
+        self.last_sweep_done: float | None = None
         self.batch_ok = True  # 先试批量 getItems,403 就自动改成逐个 getItem
 
     # ---------- 工具 ----------
@@ -179,11 +185,12 @@ class Monitor:
     def alert(self, kind: str, it: dict, extra: str = "") -> None:
         if self.silent:
             return
-        self.store.log_event(it["item_id"], kind, extra)
-        if self.excluded(it.get("title", "")):
+        if self.excluded(it.get("title", "")) or \
+                it.get("seller", "").lower() in {x.lower() for x in self.cfg.exclude_sellers}:
+            # 标题含排除词 / 卖家在排除名单(后者正常情况 eBay 已经过滤掉了,这里是双保险)
+            self.store.log_event(it["item_id"], kind + "_SKIP", extra)
             return
-        if it.get("seller", "").lower() in {x.lower() for x in self.cfg.exclude_sellers}:
-            return  # 正常情况 eBay 已经过滤掉了,这里是双保险
+        self.store.log_event(it["item_id"], kind, extra)
         heads = {
             "NEW": "🆕 新上架",
             "NEW_LATE": "🆕 新上架(补漏)",
@@ -290,6 +297,7 @@ class Monitor:
         self.last_pages_per_sweep = s.total_pages
         self.store.set_meta("pages_per_sweep", str(s.total_pages))
         self.last_sweep_end = time.time()
+        self.last_sweep_done = self.last_sweep_end
         self.sweep = None
         total, active = self.store.counts()
         print(f"✅ 全量扫描完成:{s.total_pages} 页,库里在售 {active} 条(累计见过 {total} 条)", flush=True)
@@ -425,6 +433,7 @@ class Monitor:
         while True:
             try:
                 now = time.time()
+                self.periodic(now)
                 if now - self.last_fast >= self.cfg.fast_poll:
                     self.fast_poll()
                     continue
@@ -437,16 +446,54 @@ class Monitor:
                     continue
                 if not self.stock_check():
                     time.sleep(1)
-                if now - self.last_status > 3600:
-                    self.last_status = now
-                    total, active = self.store.counts()
-                    print(f"ℹ️  {datetime.now():%H:%M} 今日 API 调用 {self.client.calls_today} 次,"
-                          f"在售 {active} 条", flush=True)
             except KeyboardInterrupt:
                 raise
             except Exception as exc:  # noqa: BLE001 - 常驻进程,单次出错不退出
+                if datetime.now().date() != self.errors_day:
+                    self.errors_day, self.errors_today = datetime.now().date(), 0
+                self.errors_today += 1
                 print(f"❌ 出错,30 秒后继续: {exc}", flush=True)
                 time.sleep(30)
+
+    # ---------- 定时:每小时状态行 + 每日汇总推送 ----------
+    def periodic(self, now: float) -> None:
+        if now - self.last_status > 3600:
+            self.last_status = now
+            total, active = self.store.counts()
+            print(f"ℹ️  {datetime.now():%H:%M} 今日 API 调用 {self.client.calls_today} 次,"
+                  f"在售 {active} 条", flush=True)
+
+        if not self.cfg.summary_time:
+            return
+        local = datetime.now()
+        today = local.strftime("%Y-%m-%d")
+        if local.strftime("%H:%M") < self.cfg.summary_time or self.store.get_meta("last_summary") == today:
+            return
+        # 到点了且今天还没发过(Mac 在那个时间点睡着的话,醒来后当天内补发)
+        self.store.set_meta("last_summary", today)
+        self.send_summary(local)
+
+    def send_summary(self, local: datetime) -> None:
+        midnight = local.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        c = self.store.event_counts_since(midnight)
+        new = c.get("NEW", 0) + c.get("NEW_LATE", 0) + c.get("OLD_REAPPEAR", 0)
+        restock = c.get("REAPPEAR", 0) + c.get("RESTOCK", 0)
+        drops = c.get("PRICE_DROP", 0)
+        skipped = sum(v for k, v in c.items() if k.endswith("_SKIP"))
+        total, active = self.store.counts()
+        last_sweep = (datetime.fromtimestamp(self.last_sweep_done).strftime("%H:%M") if self.last_sweep_done
+                      else f"重启后还没完成过(程序 {datetime.fromtimestamp(self.started_at):%H:%M} 启动)")
+        lines = [
+            f"今天推送:🆕 新上架 {new} 条 · 📦 补货/重新上架 {restock} 条 · 💲 降价 {drops} 条",
+            f"被排除词/排除卖家过滤掉:{skipped} 条;别人买走(已售数量增加):{c.get('SOLD', 0)} 次",
+            f"正在监控 {active} 条在售 listing;今日 API 调用 {self.client.calls_today} 次"
+            f"(上限 {self.cfg.budget})",
+            f"最近一次全量扫描:{last_sweep};今日出错 {self.errors_today if self.errors_day == local.date() else 0} 次",
+        ]
+        if new + restock + drops == 0:
+            lines.append("今天没有符合条件的新货 —— 程序在正常运行,不是坏了。")
+        self.notifier.send("📊 eBay 内存监控 · 每日汇总", "\n".join(lines), urgent=False)
+
 
 
 def main() -> None:
