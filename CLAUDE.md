@@ -142,8 +142,12 @@ python3 check_item.py <id|url>      # why was/wasn't this listing alerted (1 API
 - Three interleaved tasks: fast poll (`sort=newlyListed`, page 1 of 200),
   full sweep one page per loop iteration (Browse API caps offset+limit at
   10000), and `getItems` stock rechecks (20 ids/call) using leftover budget.
-- An item is only marked missing after 2 consecutive *complete* sweeps
-  (pagination shifts during a sweep can skip an item once); `getItems`
+- An item is only marked missing after 2 consecutive sweeps it was absent
+  from (pagination shifts during a sweep can skip an item once). Missing is
+  evaluated per source category (`items.src_cat`); for a query whose results
+  exceed the 10000 window, only items created after the oldest one actually
+  scanned are eligible (`SweepState.cutoffs`), so aging out of the window is
+  never mistaken for "sold out"; `getItems`
   omitting an item does NOT mark it missing, to avoid false "reappeared"
   alerts. Restock = (available + sold) increased, or OUT_OF_STOCK -> in stock.
 - Batch `getItems` is a limited-release method: a normal production keyset

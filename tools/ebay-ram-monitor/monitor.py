@@ -134,8 +134,10 @@ class SweepState:
     started: float = field(default_factory=time.time)
     query_idx: int = 0
     offset: int = 0
-    complete: bool = True   # 中途有任何一个搜索词结果超过 10000 条 → 不完整,不判定下架
     total_pages: int = 0
+    last_created: str = ""  # 当前搜索词扫到的最老一条的上架时间
+    # 类目 -> None(全扫到了)或 扫到的最老上架时间(超过 10000 条被截断)
+    cutoffs: dict = field(default_factory=dict)
 
 
 class Monitor:
@@ -145,6 +147,7 @@ class Monitor:
         self.store = store
         self.notifier = notifier
         self.silent = False  # 建立基线期间不推送
+        self.warned_truncated = False
         self.last_fast = 0.0
         self.last_sweep_end = time.time()
         self.sweep: SweepState | None = None
@@ -189,12 +192,12 @@ class Monitor:
         self.notifier.send(title, "\n".join(lines), it.get("url", ""))
 
     # ---------- 处理一条搜索结果 ----------
-    def handle_summary(self, raw: dict, source: str) -> bool:
+    def handle_summary(self, raw: dict, source: str, cat: str = "") -> bool:
         """返回 True 表示这是第一次见到的链接。"""
         it = summarize(raw)
         row = self.store.get(it["item_id"])
         if row is None:
-            self.store.insert(it)
+            self.store.insert(it, cat)
             if not self.silent:
                 created = parse_iso(it["created_at"])
                 age_h = (datetime.now(timezone.utc) - created).total_seconds() / 3600 if created else 0
@@ -206,7 +209,7 @@ class Monitor:
 
         was_missing = row["missing_since"] is not None
         old_price = row["price"]
-        self.store.mark_seen(it["item_id"], it["price"], it["title"])
+        self.store.mark_seen(it["item_id"], it["price"], it["title"], cat)
         if was_missing and not self.silent:
             self.alert("REAPPEAR", it)
         elif (
@@ -225,7 +228,7 @@ class Monitor:
                 body = self.client.search(q, cat, self.cfg.filters,
                                           limit=MAX_PAGE_SIZE, offset=offset)
                 items = body.get("itemSummaries") or []
-                new = sum(self.handle_summary(r, "fast") for r in items)
+                new = sum(self.handle_summary(r, "fast", cat) for r in items)
                 # 这一页里有见过的链接 → 更早的都见过了,不用再翻
                 if new < len(items) or len(items) < MAX_PAGE_SIZE:
                     break
@@ -242,15 +245,25 @@ class Monitor:
         s.total_pages += 1
         items = body.get("itemSummaries") or []
         for r in items:
-            self.handle_summary(r, "sweep")
+            self.handle_summary(r, "sweep", cat)
+        if items:
+            s.last_created = items[-1].get("itemCreationDate") or s.last_created
         total = int(body.get("total") or 0)
         s.offset += MAX_PAGE_SIZE
         window_end = min(total, MAX_RESULT_WINDOW)
         if s.offset >= window_end or not items:
             if total > MAX_RESULT_WINDOW:
-                s.complete = False
-                print(f"⚠️  「{q}」共 {total} 条,超过 API 上限 10000,只能扫到最新的 10000 条。"
-                      "建议加类目/价格过滤或拆成几个更窄的搜索词。")
+                cutoff = s.last_created or None
+                if not self.warned_truncated:
+                    self.warned_truncated = True
+                    print(f"ℹ️  「{q}」共 {total} 条,超过 API 上限 10000,全量扫描只覆盖最新的 10000 条"
+                          f"(上架时间晚于 {cutoff[:10] if cutoff else '?'} 的)。新上架不受影响。", flush=True)
+            else:
+                cutoff = None
+            # 同一类目有多条搜索词时,取更严格(更晚)的那个截止时间
+            vals = [v for v in (s.cutoffs.get(cat), cutoff) if v]
+            s.cutoffs[cat] = max(vals) if vals else None
+            s.last_created = ""
             s.query_idx += 1
             s.offset = 0
             if s.query_idx >= len(self.cfg.queries):
@@ -259,8 +272,7 @@ class Monitor:
     def finish_sweep(self) -> None:
         s = self.sweep
         assert s is not None
-        if s.complete:
-            self.store.after_complete_sweep(s.started)
+        self.store.after_sweep(s.started, s.cutoffs)
         self.last_pages_per_sweep = s.total_pages
         self.store.set_meta("pages_per_sweep", str(s.total_pages))
         self.last_sweep_end = time.time()
@@ -365,7 +377,7 @@ class Monitor:
                     body = self.client.search(q, cat, self.cfg.filters, limit=MAX_PAGE_SIZE, offset=offset)
                     items = body.get("itemSummaries") or []
                     for r in items:
-                        self.handle_summary(r, "sweep")
+                        self.handle_summary(r, "sweep", cat)
                     pages += 1
                     total = int(body.get("total") or 0)
                     offset += MAX_PAGE_SIZE

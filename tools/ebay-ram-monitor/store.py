@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS items (
     sold_qty       INTEGER,
     avail_status   TEXT,
     threshold      INTEGER,        -- eBay 只显示"10+ available"时的那个 10
-    multi          INTEGER DEFAULT 0   -- 是否多数量链接
+    multi          INTEGER DEFAULT 0,  -- 是否多数量链接
+    src_cat        TEXT                -- 是哪个类目的搜索找到的(判断下架时按类目分开算)
 );
 CREATE INDEX IF NOT EXISTS idx_items_check ON items(missing_since, last_checked);
 CREATE TABLE IF NOT EXISTS events (
@@ -48,6 +49,10 @@ class Store:
         self.db = sqlite3.connect(str(path))
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        # 老数据库升级:补上后加的字段
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(items)")}
+        if "src_cat" not in cols:
+            self.db.execute("ALTER TABLE items ADD COLUMN src_cat TEXT")
         self.db.commit()
 
     # ---------- meta ----------
@@ -63,22 +68,22 @@ class Store:
     def get(self, item_id: str) -> sqlite3.Row | None:
         return self.db.execute("SELECT * FROM items WHERE item_id=?", (item_id,)).fetchone()
 
-    def insert(self, it: dict) -> None:
+    def insert(self, it: dict, src_cat: str = "") -> None:
         now = time.time()
         self.db.execute(
             """INSERT INTO items(item_id, legacy_id, title, url, price,
-                   currency, buying_options, condition, location, created_at, first_seen, last_seen)
+                   currency, buying_options, condition, location, created_at, first_seen, last_seen, src_cat)
                VALUES (:item_id, :legacy_id, :title, :url, :price,
-                   :currency, :buying_options, :condition, :location, :created_at, :now, :now)""",
-            {**it, "now": now},
+                   :currency, :buying_options, :condition, :location, :created_at, :now, :now, :src_cat)""",
+            {**it, "now": now, "src_cat": src_cat},
         )
         self.db.commit()
 
-    def mark_seen(self, item_id: str, price: float | None, title: str) -> None:
+    def mark_seen(self, item_id: str, price: float | None, title: str, src_cat: str = "") -> None:
         self.db.execute(
             """UPDATE items SET last_seen=?, miss_count=0, missing_since=NULL,
-                   price=COALESCE(?, price), title=? WHERE item_id=?""",
-            (time.time(), price, title, item_id),
+                   price=COALESCE(?, price), title=?, src_cat=COALESCE(src_cat, ?) WHERE item_id=?""",
+            (time.time(), price, title, src_cat, item_id),
         )
         self.db.commit()
 
@@ -88,22 +93,29 @@ class Store:
         self.db.execute(f"UPDATE items SET {cols} WHERE item_id=:item_id", {**fields, "item_id": item_id})
         self.db.commit()
 
-    def after_complete_sweep(self, sweep_started: float, misses_to_missing: int = 2) -> int:
-        """完整扫描结束后:本轮没出现的在售链接 miss_count+1,连续 N 次没出现就判定下架。
+    def after_sweep(self, sweep_started: float, cutoffs: dict[str, str | None],
+                    misses_to_missing: int = 2) -> None:
+        """全量扫描结束后:本轮没出现的在售链接 miss_count+1,连续 N 次没出现就判定下架。
+
+        按类目分开算。cutoffs[类目] = None 表示这个类目全扫到了;
+        否则是扫到的最老一条的上架时间(结果超过 10000 条只能扫最新的那部分),
+        只有比它新的链接才参与判断 —— 更老的根本没扫到,不能当成下架。
 
         要求连续多次才判定,是因为翻页期间有商品下架会让后面的结果整体前移,
         偶尔会漏掉一两条 —— 只漏一次不算数,避免误报"重新上架"。
         """
-        cur = self.db.execute(
-            "UPDATE items SET miss_count=miss_count+1 WHERE missing_since IS NULL AND last_seen < ?",
-            (sweep_started,),
-        )
+        for cat, cutoff in cutoffs.items():
+            self.db.execute(
+                """UPDATE items SET miss_count=miss_count+1
+                   WHERE missing_since IS NULL AND last_seen < ? AND COALESCE(src_cat, '') = ?
+                     AND (? IS NULL OR created_at >= ?)""",
+                (sweep_started, cat, cutoff, cutoff),
+            )
         self.db.execute(
             "UPDATE items SET missing_since=? WHERE missing_since IS NULL AND miss_count >= ?",
             (time.time(), misses_to_missing),
         )
         self.db.commit()
-        return cur.rowcount
 
     def due_for_stock_check(self, multi_every: float, single_every: float, limit: int) -> list[sqlite3.Row]:
         now = time.time()
