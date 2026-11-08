@@ -132,6 +132,7 @@ python3 monitor.py --test-notify   # check push channel
 python3 monitor.py --once          # one search, print newest 20
 python3 monitor.py                 # daemon; first run silently baselines all results
 python3 find_category.py "<q>"     # Taxonomy API category suggestions
+python3 check_item.py <id|url>      # why was/wasn't this listing alerted (1 API call + local DB)
 ```
 
 - `ebay_client.py` (token + token-bucket `RateLimiter` sized from

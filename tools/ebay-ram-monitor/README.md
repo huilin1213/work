@@ -42,6 +42,9 @@ python3 monitor.py --once          # 3. 看搜索词搜出来的结果对不对�
 python3 monitor.py                 # 4. 常驻运行
 ```
 
+某条 listing 没收到推送?运行 `python3 check_item.py <item 号或链接>`,
+会逐项对照类目/发货地/购买方式/价格/搜索词/排除词,并显示程序什么时候第一次看到它。
+
 第一次运行会先把现有的所有链接静默扫一遍建立基线(不推送),之后才推送变化。
 数据存在 `ebay_monitor.db`(SQLite,已 gitignore)。删掉它 = 重新建立基线。
 
