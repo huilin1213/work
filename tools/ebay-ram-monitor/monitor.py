@@ -171,6 +171,11 @@ class Monitor:
         self.errors_day = datetime.now().date()
         self.started_at = time.time()
         self.last_sweep_done: float | None = None
+        # 今日 API 调用次数存进数据库,重启后接着累计(eBay 的日配额按 UTC 天算)
+        day, _, n = (store.get_meta("calls_today") or "").partition(":")
+        if day == client._calls_day.isoformat() and n.isdigit():
+            client.calls_today += int(n)
+        self.last_calls_saved = 0.0
         self.batch_ok = True  # 先试批量 getItems,403 就自动改成逐个 getItem
 
     # ---------- 工具 ----------
@@ -456,7 +461,13 @@ class Monitor:
                 time.sleep(30)
 
     # ---------- 定时:每小时状态行 + 每日汇总推送 ----------
+    def save_call_count(self) -> None:
+        self.store.set_meta("calls_today", f"{self.client._calls_day.isoformat()}:{self.client.calls_today}")
+
     def periodic(self, now: float) -> None:
+        if now - self.last_calls_saved > 60:
+            self.last_calls_saved = now
+            self.save_call_count()
         if now - self.last_status > 3600:
             self.last_status = now
             total, active = self.store.counts()
@@ -471,6 +482,7 @@ class Monitor:
             return
         # 到点了且今天还没发过(Mac 在那个时间点睡着的话,醒来后当天内补发)
         self.store.set_meta("last_summary", today)
+        self.save_call_count()
         self.send_summary(local)
 
     def send_summary(self, local: datetime) -> None:
