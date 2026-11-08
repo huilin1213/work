@@ -93,6 +93,12 @@ class Store:
         self.db.execute(f"UPDATE items SET {cols} WHERE item_id=:item_id", {**fields, "item_id": item_id})
         self.db.commit()
 
+    def retire(self, item_id: str) -> None:
+        """不再跟踪(例如卖家被排除了):标记为已下架,不再复查库存。"""
+        self.db.execute("UPDATE items SET missing_since=?, last_checked=? WHERE item_id=?",
+                        (time.time(), time.time(), item_id))
+        self.db.commit()
+
     def after_sweep(self, sweep_started: float, cutoffs: dict[str, str | None],
                     misses_to_missing: int = 2) -> None:
         """全量扫描结束后:本轮没出现的在售链接 miss_count+1,连续 N 次没出现就判定下架。

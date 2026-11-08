@@ -159,5 +159,11 @@ python3 check_item.py <id|url>      # why was/wasn't this listing alerted (1 API
   (query, category, filters) combo gets its own silent baseline
   (`meta` key `baseline:...`) the first time it's seen, so adding a
   category/query later never floods the phone with existing listings.
+- `EXCLUDE_SELLERS` becomes an `excludeSellers:{a|b}` Browse filter
+  (`Config.search_filters`), so eBay drops those listings server-side. It is
+  deliberately NOT part of the baseline key (`Config.filters` is), so editing
+  the seller list never triggers a re-baseline. Seller usernames are never
+  persisted (Marketplace Account Deletion opt-out); already-stored items from
+  an excluded seller are `retire()`d when a stock check sees the seller.
 - No test suite; validated by a fake-client simulation driving
   `Monitor.baseline/fast_poll/sweep_step/stock_check`.

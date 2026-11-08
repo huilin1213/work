@@ -45,6 +45,7 @@ class Config:
     queries: list[tuple[str, str]]   # (搜索词, 类目 ID),类目为空 = 不限
     filters: str
     exclude: list[str]
+    exclude_sellers: list[str]
     budget: int
     fast_poll: int
     sweep_minutes: int
@@ -84,12 +85,23 @@ class Config:
             queries=queries,
             filters=",".join(filters),
             exclude=[w.strip().lower() for w in num("EXCLUDE_KEYWORDS", "").split(",") if w.strip()],
+            exclude_sellers=[w.strip() for w in num("EXCLUDE_SELLERS", "").split(",") if w.strip()],
             budget=int(num("EBAY_DAILY_CALL_BUDGET", "4500")),
             fast_poll=int(num("FAST_POLL_SECONDS", "60")),
             sweep_minutes=int(num("SWEEP_MINUTES", "60")),
             watch_minutes=int(num("WATCH_RECHECK_MINUTES", "30")),
             price_drop_pct=float(num("PRICE_DROP_ALERT_PCT", "5")),
         )
+
+    @property
+    def search_filters(self) -> str:
+        """实际发给 eBay 的 filter:在 filters 基础上加 excludeSellers,
+        让 eBay 直接不返回这些卖家的商品(结果变少 → 全量扫描页数变少 → 省调用次数)。
+        excludeSellers 不计入基线的 key:增删卖家只会让结果变少,不需要重新建立基线。"""
+        if not self.exclude_sellers:
+            return self.filters
+        part = "excludeSellers:{" + "|".join(self.exclude_sellers) + "}"
+        return f"{self.filters},{part}" if self.filters else part
 
 
 def summarize(raw: dict) -> dict:
@@ -170,6 +182,8 @@ class Monitor:
         self.store.log_event(it["item_id"], kind, extra)
         if self.excluded(it.get("title", "")):
             return
+        if it.get("seller", "").lower() in {x.lower() for x in self.cfg.exclude_sellers}:
+            return  # 正常情况 eBay 已经过滤掉了,这里是双保险
         heads = {
             "NEW": "🆕 新上架",
             "NEW_LATE": "🆕 新上架(补漏)",
@@ -225,7 +239,7 @@ class Monitor:
         for q, cat in self.cfg.queries:
             offset = 0
             for _ in range(FAST_MAX_PAGES):
-                body = self.client.search(q, cat, self.cfg.filters,
+                body = self.client.search(q, cat, self.cfg.search_filters,
                                           limit=MAX_PAGE_SIZE, offset=offset)
                 items = body.get("itemSummaries") or []
                 new = sum(self.handle_summary(r, "fast", cat) for r in items)
@@ -240,7 +254,7 @@ class Monitor:
             self.sweep = SweepState()
         s = self.sweep
         q, cat = self.cfg.queries[s.query_idx]
-        body = self.client.search(q, cat, self.cfg.filters,
+        body = self.client.search(q, cat, self.cfg.search_filters,
                                   limit=MAX_PAGE_SIZE, offset=s.offset)
         s.total_pages += 1
         items = body.get("itemSummaries") or []
@@ -314,6 +328,11 @@ class Monitor:
                 # 这里不判定下架(否则误报「重新上架」),交给全量扫描判断,只是降低复查频率。
                 self.store.update_stock(row["item_id"], multi=0)
                 continue
+            seller = ((raw.get("seller") or {}).get("username") or "").lower()
+            if seller and seller in {x.lower() for x in self.cfg.exclude_sellers}:
+                # 加入排除名单之前就记下的老链接:不再复查库存,省调用次数
+                self.store.retire(row["item_id"])
+                continue
             self.apply_stock(row, raw)
         return True
 
@@ -374,7 +393,7 @@ class Monitor:
                 print(f"🔧 建立基线(不推送):「{q}」 类目 {cat or '不限'} ...", flush=True)
                 offset, pages = 0, 0
                 while True:
-                    body = self.client.search(q, cat, self.cfg.filters, limit=MAX_PAGE_SIZE, offset=offset)
+                    body = self.client.search(q, cat, self.cfg.search_filters, limit=MAX_PAGE_SIZE, offset=offset)
                     items = body.get("itemSummaries") or []
                     for r in items:
                         self.handle_summary(r, "sweep", cat)
@@ -455,18 +474,18 @@ def main() -> None:
 
     if args.once:
         for q, cat in cfg.queries:
-            body = client.search(q, cat, cfg.filters, limit=20)
+            body = client.search(q, cat, cfg.search_filters, limit=20)
             print(f"\n🔍 「{q}」 类目 {cat or '不限'} 共 {body.get('total', 0)} 条结果,最新 20 条:")
             for r in body.get("itemSummaries") or []:
                 it = summarize(r)
                 flag = " [会被排除]" if any(w in it["title"].lower() for w in cfg.exclude) else ""
                 print(f"  {it['created_at'][:16]}  {Monitor.fmt_price(it['price'], it['currency']):>14}  "
-                      f"{it['title'][:80]}{flag}")
+                      f"{it['seller'][:18]:<18}  {it['title'][:70]}{flag}")
         return
 
     qs = "; ".join(f"{q} @ {cat or '不限'}" for q, cat in cfg.queries)
     print(f"🚀 eBay 内存监控启动 | 搜索词 @ 类目: {qs}")
-    print(f"   过滤: {cfg.filters or '无'} | 推送: {', '.join(notifier.channels()) or '仅终端'}")
+    print(f"   过滤: {cfg.search_filters or '无'} | 推送: {', '.join(notifier.channels()) or '仅终端'}")
     try:
         Monitor(cfg, client, Store(DB_PATH), notifier).run()
     except KeyboardInterrupt:

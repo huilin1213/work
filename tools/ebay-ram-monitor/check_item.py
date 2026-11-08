@@ -78,6 +78,7 @@ def main() -> None:
 
         print(f"标题:   {title}")
         print(f"类目:   {cat_id}  {it.get('categoryPath', '')}")
+        print(f"卖家:   {(it.get('seller') or {}).get('username', '')}")
         print(f"发货地: {country}   购买方式: {', '.join(buying)}   价格: {price}")
         if created:
             print(f"上架时间: {created.astimezone().strftime('%m-%d %H:%M:%S')}")
@@ -107,6 +108,10 @@ def main() -> None:
         rel = [q for q, cat in cfg.queries if not cat or cat == cat_id] or [q for q, _ in cfg.queries]
         qok = any(query_matches(q, title) for q in rel)
         checks.append((qok, f"标题{'匹配' if qok else '可能不匹配'}搜索词 {rel}(近似判断)"))
+        seller = (it.get("seller") or {}).get("username", "")
+        if cfg.exclude_sellers:
+            bad = seller.lower() in {x.lower() for x in cfg.exclude_sellers}
+            checks.append((not bad, f"卖家 {seller} {'在排除名单 EXCLUDE_SELLERS 里' if bad else '不在排除名单里'}"))
         hit = [w for w in cfg.exclude if w in title.lower()]
         checks.append((not hit, f"标题{'含排除词 ' + str(hit) + ',不会推送' if hit else '不含排除词'}"))
         for ok, msg in checks:
