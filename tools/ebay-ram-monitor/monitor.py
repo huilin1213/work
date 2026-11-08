@@ -42,8 +42,7 @@ FAST_MAX_PAGES = 5
 
 @dataclass
 class Config:
-    queries: list[str]
-    category_ids: str
+    queries: list[tuple[str, str]]   # (搜索词, 类目 ID),类目为空 = 不限
     filters: str
     exclude: list[str]
     budget: int
@@ -57,7 +56,15 @@ class Config:
         def num(name: str, default: str) -> str:
             return (os.getenv(name) or default).strip()
 
-        queries = [q.strip() for q in num("EBAY_QUERIES", "DDR4 server ram").split(";") if q.strip()]
+        # 每条搜索词可以用「搜索词 @ 类目ID」单独指定类目,没写 @ 的用 EBAY_CATEGORY_IDS
+        # (eBay 一次搜索只能带一个类目,想盯多个类目就写多条搜索词)
+        default_cat = num("EBAY_CATEGORY_IDS", "")
+        queries = []
+        for entry in num("EBAY_QUERIES", "DDR4 server ram").split(";"):
+            if not entry.strip():
+                continue
+            q, _, cat = entry.partition("@")
+            queries.append((q.strip(), cat.strip() if cat.strip() else default_cat))
         filters = []
         bo = num("BUYING_OPTIONS", "FIXED_PRICE")
         if bo:
@@ -75,7 +82,6 @@ class Config:
             filters.append(extra)
         return cls(
             queries=queries,
-            category_ids=num("EBAY_CATEGORY_IDS", ""),
             filters=",".join(filters),
             exclude=[w.strip().lower() for w in num("EXCLUDE_KEYWORDS", "").split(",") if w.strip()],
             budget=int(num("EBAY_DAILY_CALL_BUDGET", "4500")),
@@ -138,7 +144,7 @@ class Monitor:
         self.client = client
         self.store = store
         self.notifier = notifier
-        self.bootstrapped = store.get_meta("bootstrap_done") == "1"
+        self.silent = False  # 建立基线期间不推送
         self.last_fast = 0.0
         self.last_sweep_end = time.time()
         self.sweep: SweepState | None = None
@@ -156,6 +162,8 @@ class Monitor:
         return f"{currency} {price:,.2f}" if price is not None else "价格见链接"
 
     def alert(self, kind: str, it: dict, extra: str = "") -> None:
+        if self.silent:
+            return
         self.store.log_event(it["item_id"], kind, extra)
         if self.excluded(it.get("title", "")):
             return
@@ -187,7 +195,7 @@ class Monitor:
         row = self.store.get(it["item_id"])
         if row is None:
             self.store.insert(it)
-            if self.bootstrapped:
+            if not self.silent:
                 created = parse_iso(it["created_at"])
                 age_h = (datetime.now(timezone.utc) - created).total_seconds() / 3600 if created else 0
                 if age_h > OLD_LISTING_HOURS:
@@ -199,7 +207,7 @@ class Monitor:
         was_missing = row["missing_since"] is not None
         old_price = row["price"]
         self.store.mark_seen(it["item_id"], it["price"], it["title"])
-        if was_missing and self.bootstrapped:
+        if was_missing and not self.silent:
             self.alert("REAPPEAR", it)
         elif (
             self.cfg.price_drop_pct > 0 and old_price and it["price"] is not None
@@ -211,10 +219,10 @@ class Monitor:
     # ---------- 任务 1:快速轮询 ----------
     def fast_poll(self) -> None:
         self.last_fast = time.time()
-        for q in self.cfg.queries:
+        for q, cat in self.cfg.queries:
             offset = 0
             for _ in range(FAST_MAX_PAGES):
-                body = self.client.search(q, self.cfg.category_ids, self.cfg.filters,
+                body = self.client.search(q, cat, self.cfg.filters,
                                           limit=MAX_PAGE_SIZE, offset=offset)
                 items = body.get("itemSummaries") or []
                 new = sum(self.handle_summary(r, "fast") for r in items)
@@ -228,8 +236,8 @@ class Monitor:
         if self.sweep is None:
             self.sweep = SweepState()
         s = self.sweep
-        q = self.cfg.queries[s.query_idx]
-        body = self.client.search(q, self.cfg.category_ids, self.cfg.filters,
+        q, cat = self.cfg.queries[s.query_idx]
+        body = self.client.search(q, cat, self.cfg.filters,
                                   limit=MAX_PAGE_SIZE, offset=s.offset)
         s.total_pages += 1
         items = body.get("itemSummaries") or []
@@ -338,13 +346,35 @@ class Monitor:
             self.alert("PRICE_DROP", it, f"原价 {row['price']:,.2f}")
 
     # ---------- 调度 ----------
-    def bootstrap(self) -> None:
-        print("🔧 第一次运行:先把现有的链接全部扫一遍记下来(不推送),之后才开始推送新变化。")
-        self.sweep = SweepState()
-        while self.sweep is not None:
-            self.sweep_step()
-        self.store.set_meta("bootstrap_done", "1")
-        self.bootstrapped = True
+    def baseline_key(self, q: str, cat: str) -> str:
+        return f"baseline:{q}@{cat}|{self.cfg.filters}"
+
+    def baseline(self) -> None:
+        """还没建立过基线的搜索词(第一次运行,或新加的搜索词/类目/过滤条件),
+        先把现有结果静默扫一遍记下来,不推送 —— 否则新加一个类目会一下子推送几百条老链接。"""
+        pending = [(q, cat) for q, cat in self.cfg.queries
+                   if self.store.get_meta(self.baseline_key(q, cat)) != "1"]
+        if not pending:
+            return
+        self.silent = True
+        try:
+            for q, cat in pending:
+                print(f"🔧 建立基线(不推送):「{q}」 类目 {cat or '不限'} ...", flush=True)
+                offset, pages = 0, 0
+                while True:
+                    body = self.client.search(q, cat, self.cfg.filters, limit=MAX_PAGE_SIZE, offset=offset)
+                    items = body.get("itemSummaries") or []
+                    for r in items:
+                        self.handle_summary(r, "sweep")
+                    pages += 1
+                    total = int(body.get("total") or 0)
+                    offset += MAX_PAGE_SIZE
+                    if not items or offset >= min(total, MAX_RESULT_WINDOW):
+                        break
+                self.store.set_meta(self.baseline_key(q, cat), "1")
+                print(f"   完成:共 {total} 条,{pages} 页", flush=True)
+        finally:
+            self.silent = False
         print("🔧 基线建立完成,开始实时监控。\n", flush=True)
 
     def print_budget(self) -> None:
@@ -359,8 +389,7 @@ class Monitor:
                   "或去 eBay 开发者后台申请 Growth Check 提额。实际运行会被限速器自动放慢。")
 
     def run(self) -> None:
-        if not self.bootstrapped:
-            self.bootstrap()
+        self.baseline()
         self.print_budget()
         while True:
             try:
@@ -413,9 +442,9 @@ def main() -> None:
     )
 
     if args.once:
-        for q in cfg.queries:
-            body = client.search(q, cfg.category_ids, cfg.filters, limit=20)
-            print(f"\n🔍 「{q}」 共 {body.get('total', 0)} 条结果,最新 20 条:")
+        for q, cat in cfg.queries:
+            body = client.search(q, cat, cfg.filters, limit=20)
+            print(f"\n🔍 「{q}」 类目 {cat or '不限'} 共 {body.get('total', 0)} 条结果,最新 20 条:")
             for r in body.get("itemSummaries") or []:
                 it = summarize(r)
                 flag = " [会被排除]" if any(w in it["title"].lower() for w in cfg.exclude) else ""
@@ -423,7 +452,8 @@ def main() -> None:
                       f"{it['title'][:80]}{flag}")
         return
 
-    print(f"🚀 eBay 内存监控启动 | 搜索词: {cfg.queries} | 类目: {cfg.category_ids or '不限'}")
+    qs = "; ".join(f"{q} @ {cat or '不限'}" for q, cat in cfg.queries)
+    print(f"🚀 eBay 内存监控启动 | 搜索词 @ 类目: {qs}")
     print(f"   过滤: {cfg.filters or '无'} | 推送: {', '.join(notifier.channels()) or '仅终端'}")
     try:
         Monitor(cfg, client, Store(DB_PATH), notifier).run()

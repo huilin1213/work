@@ -84,9 +84,10 @@ def main() -> None:
         print("\n逐项对照 .env 条件:")
 
         checks = []
-        if cfg.category_ids:
-            ok = cat_id in [c.strip() for c in cfg.category_ids.split(",")]
-            checks.append((ok, f"类目 {cat_id} {'在' if ok else '不在'} EBAY_CATEGORY_IDS={cfg.category_ids} 里"))
+        cats = {cat for _, cat in cfg.queries}
+        if all(cats):
+            ok = cat_id in cats
+            checks.append((ok, f"类目 {cat_id} {'在' if ok else '不在'}监控的类目 {sorted(cats)} 里"))
         fil = cfg.filters
         loc = re.search(r"itemLocationCountry:(\w+)", fil)
         if loc:
@@ -102,8 +103,10 @@ def main() -> None:
             lo, hi = pr.group(1), pr.group(2)
             ok = (not lo or price >= float(lo)) and (not hi or price <= float(hi))
             checks.append((ok, f"价格 {price} {'在' if ok else '不在'} [{lo}..{hi}] 区间内"))
-        qok = any(query_matches(q, title) for q in cfg.queries)
-        checks.append((qok, f"标题{'匹配' if qok else '可能不匹配'}搜索词 {cfg.queries}(近似判断)"))
+        # 只看跟这个类目对应的搜索词
+        rel = [q for q, cat in cfg.queries if not cat or cat == cat_id] or [q for q, _ in cfg.queries]
+        qok = any(query_matches(q, title) for q in rel)
+        checks.append((qok, f"标题{'匹配' if qok else '可能不匹配'}搜索词 {rel}(近似判断)"))
         hit = [w for w in cfg.exclude if w in title.lower()]
         checks.append((not hit, f"标题{'含排除词 ' + str(hit) + ',不会推送' if hit else '不含排除词'}"))
         for ok, msg in checks:

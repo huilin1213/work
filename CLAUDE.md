@@ -150,5 +150,10 @@ python3 check_item.py <id|url>      # why was/wasn't this listing alerted (1 API
   gets 403 (errorId 1100). `Monitor.stock_check()` then permanently falls back
   to single `getItem` calls, checks each single-quantity listing only once,
   and spends the stock budget on multi-quantity listings.
+- `EBAY_QUERIES` entries are `query @ categoryId` (Browse search takes one
+  category per call, so multiple categories = multiple queries). Each
+  (query, category, filters) combo gets its own silent baseline
+  (`meta` key `baseline:...`) the first time it's seen, so adding a
+  category/query later never floods the phone with existing listings.
 - No test suite; validated by a fake-client simulation driving
-  `Monitor.bootstrap/fast_poll/sweep_step/stock_check`.
+  `Monitor.baseline/fast_poll/sweep_step/stock_check`.
