@@ -133,6 +133,7 @@ python3 monitor.py --once          # one search, print newest 20
 python3 monitor.py                 # daemon; first run silently baselines all results
 python3 find_category.py "<q>"     # Taxonomy API category suggestions
 python3 check_item.py <id|url>      # why was/wasn't this listing alerted (1 API call + local DB)
+python3 monitor.py --try 'q @ cat'  # ad-hoc query: total + newest 10 (q may be empty = whole category)
 ```
 
 - `ebay_client.py` (token + token-bucket `RateLimiter` sized from
@@ -154,6 +155,9 @@ python3 check_item.py <id|url>      # why was/wasn't this listing alerted (1 API
   gets 403 (errorId 1100). `Monitor.stock_check()` then permanently falls back
   to single `getItem` calls, checks each single-quantity listing only once,
   and spends the stock budget on multi-quantity listings.
+- eBay's q syntax does NOT handle two OR-groups (`(DDR4,PC4) (server,...)`):
+  verified live it shrank category 170083 from ~15k to ~790 results. Keep one
+  OR-group per query; test alternatives with `--try` before changing `.env`.
 - `EBAY_QUERIES` entries are `query @ categoryId` (Browse search takes one
   category per call, so multiple categories = multiple queries). Each
   (query, category, filters) combo gets its own silent baseline

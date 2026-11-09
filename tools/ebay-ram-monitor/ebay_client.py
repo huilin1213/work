@@ -157,7 +157,9 @@ class EbayClient:
         limit: int = MAX_PAGE_SIZE,
         offset: int = 0,
     ) -> dict:
-        params: dict[str, Any] = {"q": q, "sort": sort, "limit": limit, "offset": offset}
+        params: dict[str, Any] = {"sort": sort, "limit": limit, "offset": offset}
+        if q:  # 可以不带关键词,只按类目搜(整个类目全部商品)
+            params["q"] = q
         if category_ids:
             params["category_ids"] = category_ids
         if filters:

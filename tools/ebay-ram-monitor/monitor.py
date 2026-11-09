@@ -513,6 +513,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="eBay DDR4 服务器内存新链接/补货监控")
     ap.add_argument("--once", action="store_true", help="只搜一次并打印最新 20 条")
     ap.add_argument("--test-notify", action="store_true", help="发一条测试推送")
+    ap.add_argument("--try", dest="try_q", action="append", metavar="'搜索词 @ 类目'",
+                    help="试一个搜索词(不改 .env):显示总条数和最新 10 条。可以写多个 --try")
     args = ap.parse_args()
 
     notifier = Notifier()
@@ -530,6 +532,18 @@ def main() -> None:
         env=os.getenv("EBAY_ENV", "production").strip(),
         daily_budget=cfg.budget,
     )
+
+    if args.try_q:
+        for entry in args.try_q:
+            q, _, cat = entry.partition("@")
+            q, cat = q.strip(), cat.strip()
+            body = client.search(q, cat, cfg.search_filters, limit=10)
+            print(f"\n🧪 「{q or '(不带关键词)'}」 类目 {cat or '不限'} → 共 {body.get('total', 0)} 条,最新 10 条:")
+            for r in body.get("itemSummaries") or []:
+                it = summarize(r)
+                flag = " [会被排除]" if any(w in it["title"].lower() for w in cfg.exclude) else ""
+                print(f"  {Monitor.fmt_price(it['price'], it['currency']):>12}  {it['title'][:75]}{flag}")
+        return
 
     if args.once:
         for q, cat in cfg.queries:
