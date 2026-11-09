@@ -51,7 +51,8 @@ class Config:
     sweep_minutes: int
     watch_minutes: int
     price_drop_pct: float
-    summary_time: str = ""   # 每日汇总推送时间 HH:MM(本机时间),空 = 不发
+    summary_time: str = ""
+    poll_every: list[int] = field(default_factory=list)  # 每条搜索词各自的快速轮询间隔(秒)   # 每日汇总推送时间 HH:MM(本机时间),空 = 不发
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -61,12 +62,16 @@ class Config:
         # 每条搜索词可以用「搜索词 @ 类目ID」单独指定类目,没写 @ 的用 EBAY_CATEGORY_IDS
         # (eBay 一次搜索只能带一个类目,想盯多个类目就写多条搜索词)
         default_cat = num("EBAY_CATEGORY_IDS", "")
-        queries = []
+        queries: list[tuple[str, str]] = []
+        poll_every: list[int] = []
         for entry in num("EBAY_QUERIES", "DDR4 server ram").split(";"):
             if not entry.strip():
                 continue
-            q, _, cat = entry.partition("@")
-            queries.append((q.strip(), cat.strip() if cat.strip() else default_cat))
+            # 格式:搜索词 @ 类目 [@ 秒]  —— 第三段可选,这条搜索词单独的快速轮询间隔
+            parts = [x.strip() for x in entry.split("@")]
+            q, cat = parts[0], (parts[1] if len(parts) > 1 and parts[1] else default_cat)
+            queries.append((q, cat))
+            poll_every.append(int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0)
         filters = []
         bo = num("BUYING_OPTIONS", "FIXED_PRICE")
         if bo:
@@ -84,6 +89,7 @@ class Config:
             filters.append(extra)
         return cls(
             queries=queries,
+            poll_every=[p or int(num("FAST_POLL_SECONDS", "60")) for p in poll_every],
             filters=",".join(filters),
             exclude=[w.strip().lower() for w in num("EXCLUDE_KEYWORDS", "").split(",") if w.strip()],
             exclude_sellers=[w.strip() for w in num("EXCLUDE_SELLERS", "").split(",") if w.strip()],
@@ -162,7 +168,7 @@ class Monitor:
         self.notifier = notifier
         self.silent = False  # 建立基线期间不推送
         self.warned_truncated = False
-        self.last_fast = 0.0
+        self.last_poll = [0.0] * len(cfg.queries)
         self.last_sweep_end = time.time()
         self.sweep: SweepState | None = None
         self.last_pages_per_sweep = int(store.get_meta("pages_per_sweep") or 0)
@@ -246,9 +252,18 @@ class Monitor:
         return False
 
     # ---------- 任务 1:快速轮询 ----------
+    def interval(self, i: int) -> int:
+        return self.cfg.poll_every[i] if i < len(self.cfg.poll_every) else self.cfg.fast_poll
+
+    def fast_poll_due(self, now: float) -> bool:
+        return any(now - self.last_poll[i] >= self.interval(i) for i in range(len(self.cfg.queries)))
+
     def fast_poll(self) -> None:
-        self.last_fast = time.time()
-        for q, cat in self.cfg.queries:
+        now = time.time()
+        for i, (q, cat) in enumerate(self.cfg.queries):
+            if now - self.last_poll[i] < self.interval(i):
+                continue
+            self.last_poll[i] = now
             offset = 0
             for _ in range(FAST_MAX_PAGES):
                 body = self.client.search(q, cat, self.cfg.search_filters,
@@ -423,7 +438,7 @@ class Monitor:
 
     def print_budget(self) -> None:
         q = len(self.cfg.queries)
-        fast = 86400 / self.cfg.fast_poll * q
+        fast = sum(86400 / self.interval(i) for i in range(q))
         sweep = self.last_pages_per_sweep * (1440 / self.cfg.sweep_minutes)
         left = self.cfg.budget - fast - sweep
         print(f"📊 每日配额估算(上限 {self.cfg.budget}):快速轮询 ≈{fast:.0f},"
@@ -439,7 +454,7 @@ class Monitor:
             try:
                 now = time.time()
                 self.periodic(now)
-                if now - self.last_fast >= self.cfg.fast_poll:
+                if self.fast_poll_due(now):
                     self.fast_poll()
                     continue
                 # 低优先级任务只在限速器里还有余量时跑,保证下一次快速轮询不用排队
@@ -535,8 +550,8 @@ def main() -> None:
 
     if args.try_q:
         for entry in args.try_q:
-            q, _, cat = entry.partition("@")
-            q, cat = q.strip(), cat.strip()
+            parts = [x.strip() for x in entry.split("@")]
+            q, cat = parts[0], (parts[1] if len(parts) > 1 else "")
             body = client.search(q, cat, cfg.search_filters, limit=10)
             print(f"\n🧪 「{q or '(不带关键词)'}」 类目 {cat or '不限'} → 共 {body.get('total', 0)} 条,最新 10 条:")
             for r in body.get("itemSummaries") or []:
@@ -556,7 +571,7 @@ def main() -> None:
                       f"{it['seller'][:18]:<18}  {it['title'][:70]}{flag}")
         return
 
-    qs = "; ".join(f"{q} @ {cat or '不限'}" for q, cat in cfg.queries)
+    qs = "; ".join(f"{q} @ {cat or '不限'} 每{cfg.poll_every[i]}秒" for i, (q, cat) in enumerate(cfg.queries))
     print(f"🚀 eBay 内存监控启动 | 搜索词 @ 类目: {qs}")
     print(f"   过滤: {cfg.search_filters or '无'} | 推送: {', '.join(notifier.channels()) or '仅终端'}")
     try:

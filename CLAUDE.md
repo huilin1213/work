@@ -158,6 +158,10 @@ python3 monitor.py --try 'q @ cat'  # ad-hoc query: total + newest 10 (q may be 
 - eBay's q syntax does NOT handle two OR-groups (`(DDR4,PC4) (server,...)`):
   verified live it shrank category 170083 from ~15k to ~790 results. Keep one
   OR-group per query; test alternatives with `--try` before changing `.env`.
+- `EBAY_QUERIES` entries are `query @ categoryId [@ pollSeconds]`; the
+  optional third field gives that query its own fast-poll interval
+  (`Config.poll_every`, `Monitor.last_poll[i]`), used to poll the small
+  PC4-only queries less often than the main DDR4 ones.
 - `EBAY_QUERIES` entries are `query @ categoryId` (Browse search takes one
   category per call, so multiple categories = multiple queries). Each
   (query, category, filters) combo gets its own silent baseline
