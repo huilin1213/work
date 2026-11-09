@@ -57,6 +57,10 @@ Critical Alerts,静音模式下也会响,并且**每隔 60 秒重复响,直到�
 (只响一次、不突破静音),或调小 `PUSHOVER_EXPIRE`。
 Pushover 每个应用每月免费额度 10,000 条,一般够用。
 
+**晚上不想被吵醒**:`.env` 里设 `PUSHOVER_NIGHT=00:00-08:00`(按 Mac 本地时间,可跨午夜)。
+这段时间内的推送照常发,但静默送达(`PUSHOVER_NIGHT_PRIORITY=-1`),早上在 App 里能看到;
+ntfy 不受影响。注意:Pushover App 自带的 Quiet Hours 挡不住紧急推送,要靠这个设置。
+
 ## 使用
 
 ```bash
