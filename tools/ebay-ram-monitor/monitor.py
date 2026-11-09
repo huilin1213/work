@@ -534,8 +534,10 @@ def main() -> None:
 
     notifier = Notifier()
     if args.test_notify:
-        if not notifier.channels():
-            print("⚠️  .env 里没有配置 NTFY_TOPIC 或 TELEGRAM_*,只会打印到终端")
+        if notifier.channels():
+            print("推送渠道:", "、".join(notifier.channels()))
+        else:
+            print("⚠️  .env 里没有配置 NTFY_TOPIC / TELEGRAM_* / PUSHOVER_*,只会打印到终端")
         notifier.send("✅ 测试推送", "eBay 内存监控可以正常推送到这台设备", "https://www.ebay.com")
         return
 
