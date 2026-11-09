@@ -12,7 +12,8 @@ sales invoices in Xero via the Accounting API. Everything below refers to that
 tool unless noted otherwise.
 - `tools/ebay-ram-monitor/` — polls the eBay Browse API (app token, no
   buyer auth, never places orders) for DDR4 server RAM listings and pushes
-  new / restocked / reappeared / price-dropped listings to ntfy or Telegram.
+  new / restocked / reappeared / price-dropped listings to ntfy, Telegram or
+  Pushover (priority 2 = iOS Critical Alert, rings through silent mode).
   See the "eBay RAM monitor" section at the end.
 - `tools/ebay-ddr4-tracker/` — nightly (23:00) eBay DDR4 RAM sales tracker;
   see the "eBay DDR4 tracker" section at the end.

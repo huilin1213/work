@@ -1,6 +1,6 @@
 # eBay DDR4 服务器内存监控
 
-用 eBay 官方 Browse API 盯「DDR4 server RAM」,发现以下情况立刻推送到手机(ntfy / Telegram):
+用 eBay 官方 Browse API 盯「DDR4 server RAM」,发现以下情况立刻推送到手机(ntfy / Telegram / Pushover):
 
 | 推送 | 含义 |
 |---|---|
@@ -28,10 +28,34 @@ cp .env.example .env      # 填 EBAY_CLIENT_ID / EBAY_CLIENT_SECRET 和推送渠
 Production 密钥要先处理 Marketplace Account Deletion 通知才能启用。本工具**不保存任何
 eBay 用户数据**(卖家信息只出现在推送里,不写进数据库),所以可以选择豁免(opt out)。
 
-推送二选一(或都配):
+推送渠道(可以同时配多个):
 - **ntfy**(最简单):手机装 ntfy App,订阅一个别人猜不到的 topic 名(如 `ram-bbw-8f3k2x`),
   把同样的名字填进 `NTFY_TOPIC`。
 - **Telegram**:@BotFather 建 bot 拿 token;给 bot 发一条消息后,用 @userinfobot 查自己的 chat_id。
+- **Pushover**(推荐用来抢货):**唯一能在 iPhone 静音模式下也响铃的通道**,见下一节。
+
+### 静音模式下也要响:Pushover 紧急推送
+
+ntfy 和 Telegram 在 iPhone 静音模式下只会无声地进通知中心(ntfy 的最高优先级 5
+能穿透专注模式,但穿透不了静音开关)。Pushover 的「紧急」优先级走苹果的
+Critical Alerts,静音模式下也会响,并且**每隔 60 秒重复响,直到你点「确认」**
+(最多 10 分钟,可在 `.env` 里调)。
+
+1. 手机装 **Pushover** App(30 天免费试用,之后一次性付费约 $5),注册并登录。
+2. App 第一次弹出「Pushover 想发送紧急通知(Critical Alerts)」时点**允许**。
+   如果当时点了拒绝:iPhone 设置 → 通知 → Pushover → 打开 **紧急通知 / Critical Alerts**。
+3. 电脑浏览器登录 <https://pushover.net>:
+   - 首页右上角 **Your User Key** → 填进 `PUSHOVER_USER_KEY`;
+   - 页面底部 **Create an Application/API Token**,名字随便填(如 eBay RAM),
+     创建后拿到的 **API Token** → 填进 `PUSHOVER_APP_TOKEN`。
+4. 运行 `python3 monitor.py --test-notify`,把手机调到静音试一下:应该会响,
+   并且每分钟重复,直到在 Pushover 里点 **Acknowledge(确认)**。
+5. 重启监控程序:`bash launchagent.sh restart`。
+
+新上架 / 补货 / 降价走紧急推送,每日汇总走静默推送(不响)。
+如果新上架太多、重复响铃太吵,把 `PUSHOVER_URGENT_PRIORITY` 改成 `1`
+(只响一次、不突破静音),或调小 `PUSHOVER_EXPIRE`。
+Pushover 每个应用每月免费额度 10,000 条,一般够用。
 
 ## 使用
 
