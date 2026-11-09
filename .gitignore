@@ -19,3 +19,7 @@ tools/xero-dhl-invoice/samples/
 tools/ebay-ddr4-tracker/.env
 tools/ebay-ddr4-tracker/data/
 tools/ebay-ddr4-tracker/reports/
+
+# eBay 内存监控的本地凭证和数据库
+tools/ebay-ram-monitor/.env
+tools/ebay-ram-monitor/*.db

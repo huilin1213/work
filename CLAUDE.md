@@ -4,11 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository contents
 
-This repo holds two independent tools:
+Three independent tools:
 
-- `tools/xero-dhl-invoice/` — parses DHL Commercial Invoice PDFs (generated
-  per shipment) and creates matching **Draft** sales invoices in Xero via the
-  Accounting API. Everything below refers to this tool unless noted otherwise.
+- `tools/xero-dhl-invoice/` — parses DHL
+Commercial Invoice PDFs (generated per shipment) and creates matching **Draft**
+sales invoices in Xero via the Accounting API. Everything below refers to that
+tool unless noted otherwise.
+- `tools/ebay-ram-monitor/` — polls the eBay Browse API (app token, no
+  buyer auth, never places orders) for DDR4 server RAM listings and pushes
+  new / restocked / reappeared / price-dropped listings to ntfy or Telegram.
+  See the "eBay RAM monitor" section at the end.
 - `tools/ebay-ddr4-tracker/` — nightly (23:00) eBay DDR4 RAM sales tracker;
   see the "eBay DDR4 tracker" section at the end.
 
@@ -143,3 +148,59 @@ python3 tracker.py             # snapshot + daily report (what the LaunchAgent r
   instead of the API — eBay blocks it and it's against their terms.
 - Validate offline with a fake client (no test suite); live calls need the
   user's eBay Production keys.
+
+## eBay RAM monitor (`tools/ebay-ram-monitor/`)
+
+```bash
+python3 monitor.py --test-notify   # check push channel
+python3 monitor.py --once          # one search, print newest 20
+python3 monitor.py                 # daemon; first run silently baselines all results
+python3 find_category.py "<q>"     # Taxonomy API category suggestions
+python3 check_item.py <id|url>      # why was/wasn't this listing alerted (1 API call + local DB)
+python3 monitor.py --try 'q @ cat'  # ad-hoc query: total + newest 10 (q may be empty = whole category)
+```
+
+- `ebay_client.py` (token + token-bucket `RateLimiter` sized from
+  `EBAY_DAILY_CALL_BUDGET`; every API call goes through it), `store.py`
+  (SQLite `ebay_monitor.db`, gitignored), `notifier.py`, `monitor.py`
+  (scheduler + detection logic).
+- Three interleaved tasks: fast poll (`sort=newlyListed`, page 1 of 200),
+  full sweep one page per loop iteration (Browse API caps offset+limit at
+  10000), and `getItems` stock rechecks (20 ids/call) using leftover budget.
+- An item is only marked missing after 2 consecutive sweeps it was absent
+  from (pagination shifts during a sweep can skip an item once). Missing is
+  evaluated per source category (`items.src_cat`); for a query whose results
+  exceed the 10000 window, only items created after the oldest one actually
+  scanned are eligible (`SweepState.cutoffs`), so aging out of the window is
+  never mistaken for "sold out"; `getItems`
+  omitting an item does NOT mark it missing, to avoid false "reappeared"
+  alerts. Restock = (available + sold) increased, or OUT_OF_STOCK -> in stock.
+- Batch `getItems` is a limited-release method: a normal production keyset
+  gets 403 (errorId 1100). `Monitor.stock_check()` then permanently falls back
+  to single `getItem` calls, checks each single-quantity listing only once,
+  and spends the stock budget on multi-quantity listings.
+- eBay's q syntax does NOT handle two OR-groups (`(DDR4,PC4) (server,...)`):
+  verified live it shrank category 170083 from ~15k to ~790 results. Keep one
+  OR-group per query; test alternatives with `--try` before changing `.env`.
+- `EBAY_QUERIES` entries are `query @ categoryId [@ pollSeconds]`; the
+  optional third field gives that query its own fast-poll interval
+  (`Config.poll_every`, `Monitor.last_poll[i]`), used to poll the small
+  PC4-only queries less often than the main DDR4 ones.
+- `EBAY_QUERIES` entries are `query @ categoryId` (Browse search takes one
+  category per call, so multiple categories = multiple queries). Each
+  (query, category, filters) combo gets its own silent baseline
+  (`meta` key `baseline:...`) the first time it's seen, so adding a
+  category/query later never floods the phone with existing listings.
+- `EXCLUDE_SELLERS` becomes an `excludeSellers:{a|b}` Browse filter
+  (`Config.search_filters`), so eBay drops those listings server-side. It is
+  deliberately NOT part of the baseline key (`Config.filters` is), so editing
+  the seller list never triggers a re-baseline. Seller usernames are never
+  persisted (Marketplace Account Deletion opt-out); already-stored items from
+  an excluded seller are `retire()`d when a stock check sees the seller.
+- Daily summary push at `DAILY_SUMMARY_TIME` (local HH:MM, default 21:00,
+  sent once per day via `meta` key `last_summary`, so a Mac asleep at that
+  time sends it on wake the same day). Counts come from the `events` table;
+  alerts suppressed by EXCLUDE_KEYWORDS/EXCLUDE_SELLERS are logged as
+  `<KIND>_SKIP` so they don't count as pushes.
+- No test suite; validated by a fake-client simulation driving
+  `Monitor.baseline/fast_poll/sweep_step/stock_check`.
