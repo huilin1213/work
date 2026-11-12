@@ -379,13 +379,15 @@ function parseOrderEmail(body) {
     if (!itemId && !orderNo) return;
     const seller = (own.match(/Seller:\s*\[?([^\s\[\]|(]+)/i) || [])[1] || '';
     const qty = (own.match(/Quantity:\s*(\d+)/i) || [])[1];
+    // Multi-quantity purchases read "Price: £600.00 (6 x £100.00)".
+    const multi = own.match(new RegExp('^Price:\\s*' + MONEY_RE + '\\s*\\((\\d+)\\s*x\\s*(' + MONEY_RE + ')\\)', 'i'));
     items.push({
       itemId: itemId,
       orderNo: orderNo,
       seller: seller,
-      price: parseMoney(s.price),
+      price: parseMoney(multi ? multi[2] : s.price),
       fee: parseMoney(s.fee),
-      qty: qty ? +qty : 1,
+      qty: multi ? +multi[1] : qty ? +qty : 1,
       title: isHtml ? findTitle(body, itemId) : '',
     });
   });

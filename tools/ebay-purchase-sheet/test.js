@@ -122,6 +122,18 @@ assert.strictEqual(parseSpec('6 x Integral 32GB DDR4 2666MHZ IN4T32GREMSX2').per
 assert.strictEqual(parseSpec('Micron 32GB 2RX4 PC4-3200AA-RB2-12 Server RAM MTA36ASF4G72PZ X 16').perListing, 16);
 assert.strictEqual(parseSpec('SERVER MEMORY MODULES - 2 x 32GB (total 64GB) pc4 2133mz').perListing, 2);
 
+// Multi-quantity offer: "Price: £600.00 (6 x £100.00)" -> qty 6 at £100.
+const multiQty = parseOrderEmail(`| #### Price: £600.00 (6 x £100.00) | £600.00 (6 x £100.00) |
+| #### Item ID: 860130620650 | 860130620650 |
+| #### Order number: 21-15389-72282 | 21-15389-72282 |
+| #### Seller: aus_5814 |
+### Order total:
+| Subtotal (6 items) | £600.00 |
+| Total charged to x -2886 | £600.00 |`);
+assert.strictEqual(multiQty.items[0].qty, 6);
+assert.strictEqual(multiQty.items[0].price, 100);
+assert.strictEqual(multiQty.total, 600);
+
 // eBay dispatch email (shape of a real one, plain-text rendering and HTML).
 const dispatchText = `# Hi Huilin, your order is being dispatched.
 
