@@ -62,6 +62,16 @@ function backfillTracking() {
   Logger.log('Tracking filled for %s rows.', applyTracking_(getSheet_(), 'after:' + CONFIG.BACKFILL_SINCE));
 }
 
+/** Run by hand: restores empty 下单时间 cells from their order emails and re-sorts. */
+function fixMissingDates() {
+  const sheet = getSheet_();
+  Logger.log('Restored %s dates.', fillMissingDates_(sheet));
+  if (sheet.getLastRow() > 2) {
+    sheet.getRange(2, 1, sheet.getLastRow() - 1, HEADERS.length)
+      .sort({ column: COL['下单时间'], ascending: false });
+  }
+}
+
 /** Called by the daily trigger. */
 function dailySync() {
   const added = sync_(CONFIG.DAILY_WINDOW);
@@ -128,6 +138,7 @@ function sync_(window) {
   applyStatusUpdates_(sheet, window);
   // Sellers often dispatch a week or more after the order.
   applyTracking_(sheet, 'newer_than:30d');
+  fillMissingDates_(sheet);
 
   if (sheet.getLastRow() > 2) {
     sheet.getRange(2, 1, sheet.getLastRow() - 1, HEADERS.length)
@@ -161,6 +172,31 @@ function buildRow_(msg, parsed, item) {
     '',
     item.itemId,
   ];
+}
+
+/**
+ * Rows whose 下单时间 is empty sort to the bottom of the sheet. Restore the
+ * date from the order email the row links to (Gmail邮件 column).
+ */
+function fillMissingDates_(sheet) {
+  const n = sheet.getLastRow() - 1;
+  if (n < 1) return 0;
+  const dates = sheet.getRange(2, COL['下单时间'], n, 1).getValues();
+  const links = sheet.getRange(2, COL['Gmail邮件'], n, 1).getValues();
+  let fixed = 0;
+  dates.forEach(function (r, i) {
+    if (r[0] !== '') return;
+    const id = (String(links[i][0]).match(/#all\/([0-9a-f]+)/) || [])[1];
+    if (!id) return;
+    try {
+      r[0] = GmailApp.getMessageById(id).getDate();
+      fixed++;
+    } catch (e) {
+      Logger.log('No email %s for row %s: %s', id, i + 2, e);
+    }
+  });
+  if (fixed) sheet.getRange(2, COL['下单时间'], n, 1).setValues(dates);
+  return fixed;
 }
 
 /**
